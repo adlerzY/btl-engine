@@ -18,7 +18,7 @@ final class BTL_Cache
         string $key,
         $value,
         string $group = 'btl',
-        int $ttl = 3600
+        int $ttl = 3600 // زمان را به همان ۳۶۰۰ برگردان تا دیتای جدید اشتباهاً همیشه قفل نشود
     ): bool {
 
         return wp_cache_set(
@@ -46,7 +46,11 @@ final class BTL_Cache
         string $group = 'btl',
         int $ttl = 3600
     ) {
+        // ❌ کش را موقتاً کاملاً بای‌پاس (Bypass) می‌کنیم
+        // با این کار مستقیماً دیتای اصلی از دیتابیس لود می‌شود
+        return $callback();
 
+        /* کدهای قبلی را موقتاً کامنت می‌کنیم:
         $cached = self::get(
             $key,
             $group
@@ -66,6 +70,7 @@ final class BTL_Cache
         );
 
         return $value;
+        */
     }
 
     public static function forgetMany(
