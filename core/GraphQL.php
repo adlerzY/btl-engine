@@ -6,18 +6,17 @@ final class BTL_GraphQL
 {
     public static function boot(): void
     {
-        // تغییر اولویت از 100 به 10 جهت ثبت قطعی ساختارها همگام با هسته گراف‌کیوال
         add_action('graphql_register_types', [self::class, 'register'], 10);
     }
 
     public static function register(): void
-    
     {
         BTL_GraphQL::register_objects();
         BTL_GraphQL::register_region_fields();
         BTL_GraphQL::register_product_fields();
         BTL_GraphQL::register_category_fields();
         BTL_GraphQL::register_variation_fields();
+        BTL_GraphQL::register_order_fields();
     }
 
     private static function register_region_fields(): void
@@ -81,6 +80,7 @@ final class BTL_GraphQL
                 'codePriceToman'        => ['type' => 'String'],
                 'giftRegularPriceToman' => ['type' => 'String'],
                 'codeRegularPriceToman' => ['type' => 'String'],
+                'regionSlug'            => ['type' => 'String'],
             ]
         ]);
 
@@ -300,6 +300,30 @@ final class BTL_GraphQL
         ]);
     }
 
+    // این متد کلاً غایب بود که اضافه شد
+    private static function register_order_fields(): void
+    {
+        register_graphql_field('Order', 'paymentUrl', [
+            'type'        => 'String',
+            'description' => 'لینک مستقیم درگاه پرداخت سفارش که توسط خود ووکامرس تولید می‌شود.',
+            'resolve'     => static function ($order) {
+                $order_id = $order->databaseId ?? null;
+
+                if (!$order_id) {
+                    return null;
+                }
+
+                $wc_order = wc_get_order((int) $order_id);
+
+                if (!$wc_order) {
+                    return null;
+                }
+
+                return $wc_order->get_checkout_payment_url();
+            }
+        ]);
+    }
+
     public static function variation_cards(int $product_id): array
     {
         return BTL_Cache::remember("variations_{$product_id}", static function () use ($product_id) {
@@ -335,6 +359,15 @@ final class BTL_GraphQL
         $manual_gift = $variation->get_meta('_gift_price_toman');
         $manual_code = $variation->get_meta('_code_price_toman');
 
+        $region_slug = 'eu';
+        foreach ($variation->get_variation_attributes() as $key => $value) {
+            $taxonomy = str_replace('attribute_', '', $key);
+            if (strpos(strtolower($taxonomy), 'region') !== false || strpos($taxonomy, 'ریجن') !== false) {
+                $region_slug = $value;
+                break;
+            }
+        }
+
         return [
             'databaseId'            => $variation->get_id(),
             'name'                  => $variation->get_name(),
@@ -347,7 +380,8 @@ final class BTL_GraphQL
             'giftPriceToman'        => $manual_gift !== '' ? $manual_gift : ($variation->get_meta('giftPriceToman') ?: 'disabled'),
             'codePriceToman'        => $manual_code !== '' ? $manual_code : ($variation->get_meta('codePriceToman') ?: 'disabled'),
             'giftRegularPriceToman' => $manual_gift !== '' ? $manual_gift : ($variation->get_meta('giftRegularPriceToman') ?: 'disabled'),
-            'codeRegularPriceToman' => $manual_code !== '' ? $manual_code : ($variation->get_meta('codeRegularPriceToman') ?: 'disabled')
+            'codeRegularPriceToman' => $manual_code !== '' ? $manual_code : ($variation->get_meta('codeRegularPriceToman') ?: 'disabled'),
+            'regionSlug'            => $region_slug
         ];
     }
 
