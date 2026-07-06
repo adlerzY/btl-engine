@@ -6,18 +6,17 @@ final class BTL_GraphQL
 {
     public static function boot(): void
     {
-        // تغییر اولویت از 100 به 10 جهت ثبت قطعی ساختارها همگام با هسته گراف‌کیوال
         add_action('graphql_register_types', [self::class, 'register'], 10);
     }
 
     public static function register(): void
-    
     {
         BTL_GraphQL::register_objects();
         BTL_GraphQL::register_region_fields();
         BTL_GraphQL::register_product_fields();
         BTL_GraphQL::register_category_fields();
         BTL_GraphQL::register_variation_fields();
+        BTL_GraphQL::register_order_fields();
     }
 
     private static function register_region_fields(): void
@@ -81,6 +80,7 @@ final class BTL_GraphQL
                 'codePriceToman'        => ['type' => 'String'],
                 'giftRegularPriceToman' => ['type' => 'String'],
                 'codeRegularPriceToman' => ['type' => 'String'],
+                'regionSlug'            => ['type' => 'String'],
             ]
         ]);
 
@@ -113,6 +113,34 @@ final class BTL_GraphQL
                 'imageUrl'    => ['type' => 'String']
             ]
         ]);
+
+        register_graphql_object_type('BtlNotification', [
+            'fields' => [
+                'id' => ['type' => 'ID'],
+                'title' => ['type' => 'String'],
+                'body' => ['type' => 'String'],
+                'link' => ['type' => 'String'],
+                'isRead' => ['type' => 'Boolean', 'resolve' => fn($n) => (bool)$n['is_read']],
+                'createdAt' => ['type' => 'String', 'resolve' => fn($n) => $n['created_at']],
+            ],
+        ]);
+
+        register_graphql_field('User', 'notifications', [
+            'type' => ['list_of' => 'BtlNotification'],
+            'args' => ['first' => ['type' => 'Int']],
+            'resolve' => fn($user, $args) => get_current_user_id() === $user->userId
+                ? BTL_Notifications::forUser($user->userId, $args['first'] ?? 20) : [],
+        ]);
+
+        register_graphql_mutation('markNotificationsRead', [
+            'inputFields' => [],
+            'outputFields' => ['success' => ['type' => 'Boolean']],
+            'mutateAndGetPayload' => function () {
+                if (!is_user_logged_in()) throw new GraphQL\Error\UserError('باید وارد شوید.');
+                BTL_Notifications::markAllRead(get_current_user_id());
+                return ['success' => true];
+            },
+        ]);
     }
 
     private static function register_product_fields(): void
@@ -131,6 +159,14 @@ final class BTL_GraphQL
             'resolve' => static function ($product) {
                 return BTL_GraphQL::variation_cards((int)$product->databaseId);
             }
+        ]);
+
+        register_graphql_field('LineItem', 'fulfillmentStatus', [
+            'type' => 'String',
+            'resolve' => static function ($item) {
+                $orderItem = WC_Order_Factory::get_order_item($item->ID ?? 0);
+                return $orderItem ? ($orderItem->get_meta('_fulfillment_status') ?: 'queued') : 'queued';
+            },
         ]);
 
         register_graphql_field('Product', 'secondaryGallery', [
@@ -300,6 +336,29 @@ final class BTL_GraphQL
         ]);
     }
 
+    private static function register_order_fields(): void
+    {
+        register_graphql_field('Order', 'paymentUrl', [
+            'type'        => 'String',
+            'description' => 'لینک مستقیم درگاه پرداخت سفارش که توسط خود ووکامرس تولید می‌شود.',
+            'resolve'     => static function ($order) {
+                $order_id = $order->databaseId ?? null;
+
+                if (!$order_id) {
+                    return null;
+                }
+
+                $wc_order = wc_get_order((int) $order_id);
+
+                if (!$wc_order) {
+                    return null;
+                }
+
+                return $wc_order->get_checkout_payment_url();
+            }
+        ]);
+    }
+
     public static function variation_cards(int $product_id): array
     {
         return BTL_Cache::remember("variations_{$product_id}", static function () use ($product_id) {
@@ -335,6 +394,15 @@ final class BTL_GraphQL
         $manual_gift = $variation->get_meta('_gift_price_toman');
         $manual_code = $variation->get_meta('_code_price_toman');
 
+        $region_slug = 'eu';
+        foreach ($variation->get_variation_attributes() as $key => $value) {
+            $taxonomy = str_replace('attribute_', '', $key);
+            if (strpos(strtolower($taxonomy), 'region') !== false || strpos($taxonomy, 'ریجن') !== false) {
+                $region_slug = $value;
+                break;
+            }
+        }
+
         return [
             'databaseId'            => $variation->get_id(),
             'name'                  => $variation->get_name(),
@@ -347,7 +415,8 @@ final class BTL_GraphQL
             'giftPriceToman'        => $manual_gift !== '' ? $manual_gift : ($variation->get_meta('giftPriceToman') ?: 'disabled'),
             'codePriceToman'        => $manual_code !== '' ? $manual_code : ($variation->get_meta('codePriceToman') ?: 'disabled'),
             'giftRegularPriceToman' => $manual_gift !== '' ? $manual_gift : ($variation->get_meta('giftRegularPriceToman') ?: 'disabled'),
-            'codeRegularPriceToman' => $manual_code !== '' ? $manual_code : ($variation->get_meta('codeRegularPriceToman') ?: 'disabled')
+            'codeRegularPriceToman' => $manual_code !== '' ? $manual_code : ($variation->get_meta('codeRegularPriceToman') ?: 'disabled'),
+            'regionSlug'            => $region_slug
         ];
     }
 
