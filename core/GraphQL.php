@@ -336,6 +336,7 @@ final class BTL_GraphQL
         ]);
     }
 
+
     private static function register_order_fields(): void
     {
         register_graphql_field('Order', 'paymentUrl', [
