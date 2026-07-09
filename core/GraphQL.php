@@ -21,30 +21,30 @@ final class BTL_GraphQL
         return $args;
     }
 
-public static function restrict_support_ticket_query($query_args, $source, $args, $context, $info)
-{
-    $postTypes = $query_args['post_type'] ?? [];
-    $postTypes = is_array($postTypes) ? $postTypes : [$postTypes];
+    public static function restrict_support_ticket_query($query_args, $source, $args, $context, $info)
+    {
+        $postTypes = $query_args['post_type'] ?? [];
+        $postTypes = is_array($postTypes) ? $postTypes : [$postTypes];
 
-    if (in_array('support_ticket', $postTypes, true)) {
-        $userId = get_current_user_id();
+        if (in_array('support_ticket', $postTypes, true)) {
+            $userId = get_current_user_id();
 
-        if (!$userId) {
-            $query_args['post__in'] = [0];
-            return $query_args;
+            if (!$userId) {
+                $query_args['post__in'] = [0];
+                return $query_args;
+            }
+
+            if (!user_can($userId, 'manage_woocommerce')) {
+                $query_args['meta_query'] = [[
+                    'key' => 'customer_id',
+                    'value' => $userId,
+                    'compare' => '=',
+                ]];
+            }
         }
 
-        if (!user_can($userId, 'manage_woocommerce')) {
-            $query_args['meta_query'] = [[
-                'key' => 'customer_id',
-                'value' => $userId,
-                'compare' => '=',
-            ]];
-        }
+        return $query_args;
     }
-
-    return $query_args;
-}
 
     public static function register(): void
     {
@@ -168,8 +168,13 @@ public static function restrict_support_ticket_query($query_args, $source, $args
         register_graphql_field('User', 'notifications', [
             'type' => ['list_of' => 'BtlNotification'],
             'args' => ['first' => ['type' => 'Int']],
-            'resolve' => fn($user, $args) => get_current_user_id() === $user->userId
-                ? BTL_Notifications::forUser($user->userId, $args['first'] ?? 20) : [],
+            'resolve' => static function ($user, $args) {
+                $currentUserId = get_current_user_id();
+                if (!$currentUserId || $currentUserId !== (int)$user->databaseId) {
+                    return [];
+                }
+                return BTL_Notifications::forUser($currentUserId, $args['first'] ?? 20);
+            },
         ]);
 
         register_graphql_mutation('markNotificationsRead', [
@@ -455,28 +460,20 @@ public static function restrict_support_ticket_query($query_args, $source, $args
 
     private static function register_user_fields(): void
     {
-        register_graphql_field('User', 'wishlist', [
-            'type' => ['list_of' => 'Product'],
+        register_graphql_field('User', 'wishlistIds', [
+            'type' => ['list_of' => 'Int'],
             'resolve' => static function ($user) {
-                if (get_current_user_id() !== $user->userId) {
+                $currentUserId = get_current_user_id();
+                if (!$currentUserId || $currentUserId !== (int)$user->databaseId) {
                     return [];
                 }
 
-                $ids = get_user_meta($user->userId, 'btl_wishlist_ids', true);
-
-                if (!is_array($ids) || empty($ids)) {
+                $ids = get_user_meta($currentUserId, 'btl_wishlist_ids', true);
+                if (!is_array($ids)) {
                     return [];
                 }
 
-                $products = [];
-                foreach ($ids as $id) {
-                    $product = wc_get_product((int)$id);
-                    if ($product && class_exists('\WPGraphQL\WooCommerce\Model\Product')) {
-                        $products[] = new \WPGraphQL\WooCommerce\Model\Product($product);
-                    }
-                }
-
-                return $products;
+                return array_values(array_map('intval', $ids));
             }
         ]);
 
@@ -517,10 +514,11 @@ public static function restrict_support_ticket_query($query_args, $source, $args
         register_graphql_field('User', 'avatarUrl', [
             'type' => 'String',
             'resolve' => static function ($user) {
-                if (get_current_user_id() !== $user->userId) {
+                $currentUserId = get_current_user_id();
+                if (!$currentUserId || $currentUserId !== (int)$user->databaseId) {
                     return null;
                 }
-                return get_user_meta($user->userId, 'btl_avatar_url', true) ?: null;
+                return get_user_meta($currentUserId, 'btl_avatar_url', true) ?: null;
             }
         ]);
 
@@ -601,7 +599,7 @@ public static function restrict_support_ticket_query($query_args, $source, $args
                 ], true);
 
                 if (is_wp_error($postId)) {
-                    throw new GraphQL\Error\UserError('ثبت تیکت با خطا مواجه شد.');
+                    throw new GraphQL\Error\UserError('ثبت تیکت با خطا مواجه شد: ' . $postId->get_error_message());
                 }
 
                 update_post_meta($postId, 'customer_id', $userId);
