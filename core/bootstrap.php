@@ -13,6 +13,7 @@ require_once __DIR__ . '/SecureVault.php';
 require_once __DIR__ . '/SecureFields.php';
 require_once __DIR__ . '/OrderSecurityHooks.php';
 require_once __DIR__ . '/OrderFulfillment.php';
+require_once __DIR__ . '/Notifications.php';
 
 BTL_Price_Engine::boot();
 BTL_GraphQL::boot();

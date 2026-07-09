@@ -8,4 +8,8 @@
 defined('ABSPATH') || exit;
 
 require_once __DIR__ . '/core/bootstrap.php';
-register_activation_hook(__FILE__, ['BTL_Secure_Fields', 'install']);
+
+register_activation_hook(__FILE__, function () {
+    BTL_Secure_Fields::install();
+    BTL_Notifications::install();
+});

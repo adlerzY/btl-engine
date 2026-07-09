@@ -6,8 +6,45 @@ final class BTL_GraphQL
 {
     public static function boot(): void
     {
+        add_filter('register_post_type_args', [self::class, 'expose_support_ticket_type'], 10, 2);
+        add_filter('graphql_post_object_connection_query_args', [self::class, 'restrict_support_ticket_query'], 10, 5);
         add_action('graphql_register_types', [self::class, 'register'], 10);
     }
+
+    public static function expose_support_ticket_type($args, $post_type)
+    {
+        if ($post_type === 'support_ticket') {
+            $args['show_in_graphql'] = true;
+            $args['graphql_single_name'] = 'SupportTicket';
+            $args['graphql_plural_name'] = 'SupportTickets';
+        }
+        return $args;
+    }
+
+public static function restrict_support_ticket_query($query_args, $source, $args, $context, $info)
+{
+    $postTypes = $query_args['post_type'] ?? [];
+    $postTypes = is_array($postTypes) ? $postTypes : [$postTypes];
+
+    if (in_array('support_ticket', $postTypes, true)) {
+        $userId = get_current_user_id();
+
+        if (!$userId) {
+            $query_args['post__in'] = [0];
+            return $query_args;
+        }
+
+        if (!user_can($userId, 'manage_woocommerce')) {
+            $query_args['meta_query'] = [[
+                'key' => 'customer_id',
+                'value' => $userId,
+                'compare' => '=',
+            ]];
+        }
+    }
+
+    return $query_args;
+}
 
     public static function register(): void
     {
@@ -17,6 +54,9 @@ final class BTL_GraphQL
         BTL_GraphQL::register_category_fields();
         BTL_GraphQL::register_variation_fields();
         BTL_GraphQL::register_order_fields();
+        BTL_GraphQL::register_secret_mutations();
+        BTL_GraphQL::register_user_fields();
+        BTL_GraphQL::register_support_ticket_fields();
     }
 
     private static function register_region_fields(): void
@@ -32,22 +72,22 @@ final class BTL_GraphQL
             'type' => 'String',
             'resolve' => static function ($term) {
                 $id = $term->term_id ?? $term->databaseId ?? null;
-                
+
                 if (!$id) {
                     return null;
                 }
-                
+
                 return BTL_Cache::remember("region_flag_{$id}", static function () use ($id) {
                     $flag_value = get_term_meta($id, 'flag_url', true);
-                    
+
                     if (is_numeric($flag_value)) {
                         return BTL_GraphQL::image_url((int)$flag_value);
                     }
-                    
+
                     if (is_array($flag_value) && isset($flag_value['url'])) {
                         return $flag_value['url'];
                     }
-                    
+
                     return is_string($flag_value) && !empty($flag_value) ? $flag_value : null;
                 }, 'btl_media', DAY_IN_SECONDS);
             }
@@ -164,7 +204,7 @@ final class BTL_GraphQL
         register_graphql_field('LineItem', 'fulfillmentStatus', [
             'type' => 'String',
             'resolve' => static function ($item) {
-                $orderItem = WC_Order_Factory::get_order_item($item->ID ?? 0);
+                $orderItem = WC_Order_Factory::get_order_item($item->databaseId ?? 0);
                 return $orderItem ? ($orderItem->get_meta('_fulfillment_status') ?: 'queued') : 'queued';
             },
         ]);
@@ -175,7 +215,7 @@ final class BTL_GraphQL
                 $id = $product->databaseId;
                 return BTL_Cache::remember("secondary_gallery_{$id}", static function () use ($id) {
                     $gallery = [];
-                    
+
                     if (function_exists('get_field')) {
                         $gallery = get_field('secondary_gallery', $id);
                     }
@@ -232,7 +272,7 @@ final class BTL_GraphQL
             'type'    => 'CategoryImageType',
             'resolve' => $category_image_resolver
         ]);
-        
+
         register_graphql_field('ProductCategory', 'categoryImage', [
             'type'    => 'CategoryImageType',
             'resolve' => $category_image_resolver
@@ -246,11 +286,11 @@ final class BTL_GraphQL
 
             return BTL_Cache::remember("category_banners_{$id}", static function () use ($id) {
                 $banners = [];
-                
+
                 if (function_exists('get_field')) {
                     $banners = get_field('banner_list', 'product_cat_' . $id);
                 }
-                
+
                 if (empty($banners) || !is_array($banners)) {
                     $banners = get_term_meta($id, 'banner_list', true);
                 }
@@ -324,7 +364,7 @@ final class BTL_GraphQL
             'type' => 'Integer',
             'resolve' => static function ($term) {
                 $id = $term->term_id ?? $term->databaseId ?? null;
-                
+
                 if (!$id) {
                     return 0;
                 }
@@ -335,7 +375,6 @@ final class BTL_GraphQL
             }
         ]);
     }
-
 
     private static function register_order_fields(): void
     {
@@ -357,6 +396,223 @@ final class BTL_GraphQL
 
                 return $wc_order->get_checkout_payment_url();
             }
+        ]);
+    }
+
+    private static function register_secret_mutations(): void
+    {
+        register_graphql_mutation('revealOrderSecret', [
+            'inputFields' => [
+                'orderId' => ['type' => ['non_null' => 'Int']],
+                'itemId' => ['type' => ['non_null' => 'Int']],
+                'fieldType' => ['type' => ['non_null' => 'String']],
+            ],
+            'outputFields' => [
+                'value' => ['type' => 'String'],
+            ],
+            'mutateAndGetPayload' => function ($input) {
+                if (!is_user_logged_in()) {
+                    throw new GraphQL\Error\UserError('برای این عملیات باید وارد حساب کاربری شوید.');
+                }
+
+                $orderId = (int)$input['orderId'];
+                $itemId = (int)$input['itemId'];
+                $fieldType = sanitize_text_field($input['fieldType']);
+
+                if ($fieldType !== 'cdkey') {
+                    throw new GraphQL\Error\UserError('این نوع فیلد از این مسیر قابل دسترسی نیست.');
+                }
+
+                $order = wc_get_order($orderId);
+                if (!$order) {
+                    throw new GraphQL\Error\UserError('سفارش یافت نشد.');
+                }
+
+                $currentUserId = get_current_user_id();
+                if ((int)$order->get_customer_id() !== $currentUserId) {
+                    throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
+                }
+
+                if ($order->get_status() !== 'completed') {
+                    throw new GraphQL\Error\UserError('سفارش هنوز تکمیل نشده است.');
+                }
+
+                $item = WC_Order_Factory::get_order_item($itemId);
+                if (!$item || (int)$item->get_order_id() !== $orderId) {
+                    throw new GraphQL\Error\UserError('آیتم نامعتبر است.');
+                }
+
+                $value = BTL_Secure_Fields::revealForCustomerCdKey($orderId, $itemId, $currentUserId);
+
+                if ($value === null) {
+                    throw new GraphQL\Error\UserError('کدی برای این آیتم یافت نشد.');
+                }
+
+                return ['value' => $value];
+            },
+        ]);
+    }
+
+    private static function register_user_fields(): void
+    {
+        register_graphql_field('User', 'wishlist', [
+            'type' => ['list_of' => 'Product'],
+            'resolve' => static function ($user) {
+                if (get_current_user_id() !== $user->userId) {
+                    return [];
+                }
+
+                $ids = get_user_meta($user->userId, 'btl_wishlist_ids', true);
+
+                if (!is_array($ids) || empty($ids)) {
+                    return [];
+                }
+
+                $products = [];
+                foreach ($ids as $id) {
+                    $product = wc_get_product((int)$id);
+                    if ($product && class_exists('\WPGraphQL\WooCommerce\Model\Product')) {
+                        $products[] = new \WPGraphQL\WooCommerce\Model\Product($product);
+                    }
+                }
+
+                return $products;
+            }
+        ]);
+
+        register_graphql_mutation('toggleWishlistItem', [
+            'inputFields' => [
+                'productId' => ['type' => ['non_null' => 'Int']],
+            ],
+            'outputFields' => [
+                'inWishlist' => ['type' => 'Boolean'],
+            ],
+            'mutateAndGetPayload' => function ($input) {
+                if (!is_user_logged_in()) {
+                    throw new GraphQL\Error\UserError('باید وارد حساب کاربری شوید.');
+                }
+
+                $userId = get_current_user_id();
+                $productId = (int)$input['productId'];
+
+                $ids = get_user_meta($userId, 'btl_wishlist_ids', true);
+                if (!is_array($ids)) {
+                    $ids = [];
+                }
+
+                $inWishlist = in_array($productId, $ids, true);
+
+                if ($inWishlist) {
+                    $ids = array_values(array_diff($ids, [$productId]));
+                } else {
+                    $ids[] = $productId;
+                }
+
+                update_user_meta($userId, 'btl_wishlist_ids', $ids);
+
+                return ['inWishlist' => !$inWishlist];
+            },
+        ]);
+
+        register_graphql_field('User', 'avatarUrl', [
+            'type' => 'String',
+            'resolve' => static function ($user) {
+                if (get_current_user_id() !== $user->userId) {
+                    return null;
+                }
+                return get_user_meta($user->userId, 'btl_avatar_url', true) ?: null;
+            }
+        ]);
+
+        register_graphql_mutation('updateUserAvatar', [
+            'inputFields' => [
+                'avatarUrl' => ['type' => ['non_null' => 'String']],
+            ],
+            'outputFields' => [
+                'success' => ['type' => 'Boolean'],
+                'avatarUrl' => ['type' => 'String'],
+            ],
+            'mutateAndGetPayload' => function ($input) {
+                if (!is_user_logged_in()) {
+                    throw new GraphQL\Error\UserError('باید وارد حساب کاربری شوید.');
+                }
+
+                $avatarUrl = esc_url_raw($input['avatarUrl']);
+
+                if (strpos($avatarUrl, '/avatars/') !== 0) {
+                    throw new GraphQL\Error\UserError('مسیر آواتار نامعتبر است.');
+                }
+
+                $userId = get_current_user_id();
+                update_user_meta($userId, 'btl_avatar_url', $avatarUrl);
+
+                return ['success' => true, 'avatarUrl' => $avatarUrl];
+            },
+        ]);
+    }
+
+    private static function register_support_ticket_fields(): void
+    {
+        register_graphql_field('SupportTicket', 'linkedOrderId', [
+            'type' => 'Int',
+            'resolve' => static function ($ticket) {
+                $value = get_post_meta($ticket->databaseId, 'linked_order_id', true);
+                return $value !== '' ? (int)$value : null;
+            }
+        ]);
+
+        register_graphql_field('SupportTicket', 'ticketStatus', [
+            'type' => 'String',
+            'resolve' => static function ($ticket) {
+                return get_post_meta($ticket->databaseId, 'ticket_status', true) ?: 'open';
+            }
+        ]);
+
+        register_graphql_field('SupportTicket', 'customerId', [
+            'type' => 'Int',
+            'resolve' => static function ($ticket) {
+                $value = get_post_meta($ticket->databaseId, 'customer_id', true);
+                return $value !== '' ? (int)$value : null;
+            }
+        ]);
+
+        register_graphql_mutation('createSupportTicket', [
+            'inputFields' => [
+                'title' => ['type' => ['non_null' => 'String']],
+                'content' => ['type' => ['non_null' => 'String']],
+                'linkedOrderId' => ['type' => 'Int'],
+            ],
+            'outputFields' => [
+                'ticketId' => ['type' => 'Int'],
+            ],
+            'mutateAndGetPayload' => function ($input) {
+                if (!is_user_logged_in()) {
+                    throw new GraphQL\Error\UserError('برای ارسال تیکت باید وارد حساب کاربری شوید.');
+                }
+
+                $userId = get_current_user_id();
+
+                $postId = wp_insert_post([
+                    'post_type' => 'support_ticket',
+                    'post_title' => sanitize_text_field($input['title']),
+                    'post_content' => wp_kses_post($input['content']),
+                    'post_status' => 'publish',
+                    'post_author' => $userId,
+                ], true);
+
+                if (is_wp_error($postId)) {
+                    throw new GraphQL\Error\UserError('ثبت تیکت با خطا مواجه شد.');
+                }
+
+                update_post_meta($postId, 'customer_id', $userId);
+                update_post_meta($postId, 'ticket_status', 'open');
+
+                if (!empty($input['linkedOrderId'])) {
+                    update_post_meta($postId, 'linked_order_id', (int)$input['linkedOrderId']);
+                }
+
+                return ['ticketId' => $postId];
+            },
         ]);
     }
 
