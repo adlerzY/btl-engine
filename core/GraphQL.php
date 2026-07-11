@@ -151,7 +151,7 @@ final class BTL_GraphQL
             'fields' => [
                 'description' => ['type' => 'String'],
                 'imageUrl'    => ['type' => 'String']
-            ]
+                ]
         ]);
 
         register_graphql_object_type('BtlNotification', [
@@ -514,11 +514,11 @@ final class BTL_GraphQL
         register_graphql_field('User', 'avatarUrl', [
             'type' => 'String',
             'resolve' => static function ($user) {
-                $currentUserId = get_current_user_id();
-                if (!$currentUserId || $currentUserId !== (int)$user->databaseId) {
+                $userId = (int)($user->databaseId ?? 0);
+                if (!$userId) {
                     return null;
                 }
-                return get_user_meta($currentUserId, 'btl_avatar_url', true) ?: null;
+                return get_user_meta($userId, 'btl_avatar_url', true) ?: null;
             }
         ]);
 
@@ -545,6 +545,65 @@ final class BTL_GraphQL
                 update_user_meta($userId, 'btl_avatar_url', $avatarUrl);
 
                 return ['success' => true, 'avatarUrl' => $avatarUrl];
+            },
+        ]);
+
+        register_graphql_mutation('updateCustomerProfile', [
+            'inputFields' => [
+                'firstName' => ['type' => 'String'],
+                'lastName' => ['type' => 'String'],
+                'email' => ['type' => 'String'],
+            ],
+            'outputFields' => [
+                'success' => ['type' => 'Boolean'],
+                'name' => ['type' => 'String'],
+                'email' => ['type' => 'String'],
+            ],
+            'mutateAndGetPayload' => function ($input) {
+                if (!is_user_logged_in()) {
+                    throw new GraphQL\Error\UserError('باید وارد حساب کاربری شوید.');
+                }
+
+                $userId = get_current_user_id();
+                $updateArgs = ['ID' => $userId];
+
+                if (isset($input['firstName'])) {
+                    $updateArgs['first_name'] = sanitize_text_field($input['firstName']);
+                }
+                if (isset($input['lastName'])) {
+                    $updateArgs['last_name'] = sanitize_text_field($input['lastName']);
+                }
+                if (!empty($input['email'])) {
+                    $email = sanitize_email($input['email']);
+                    if (!is_email($email)) {
+                        throw new GraphQL\Error\UserError('ایمیل نامعتبر است.');
+                    }
+                    $existing = email_exists($email);
+                    if ($existing && (int)$existing !== $userId) {
+                        throw new GraphQL\Error\UserError('این ایمیل قبلاً استفاده شده است.');
+                    }
+                    $updateArgs['user_email'] = $email;
+                }
+
+                if (isset($input['firstName']) || isset($input['lastName'])) {
+                    $first = $input['firstName'] ?? get_user_meta($userId, 'first_name', true);
+                    $last = $input['lastName'] ?? get_user_meta($userId, 'last_name', true);
+                    $updateArgs['display_name'] = trim($first . ' ' . $last) ?: null;
+                }
+
+                $result = wp_update_user($updateArgs);
+
+                if (is_wp_error($result)) {
+                    throw new GraphQL\Error\UserError('بروزرسانی با خطا مواجه شد: ' . $result->get_error_message());
+                }
+
+                $user = get_userdata($userId);
+
+                return [
+                    'success' => true,
+                    'name' => $user->display_name,
+                    'email' => $user->user_email,
+                ];
             },
         ]);
     }
@@ -610,6 +669,34 @@ final class BTL_GraphQL
                 }
 
                 return ['ticketId' => $postId];
+            },
+        ]);
+
+        register_graphql_field('RootQuery', 'myTicket', [
+            'type' => 'SupportTicket',
+            'args' => [
+                'id' => ['type' => ['non_null' => 'Int']],
+            ],
+            'resolve' => static function ($root, $args, $context, $info) {
+                if (!is_user_logged_in()) {
+                    throw new GraphQL\Error\UserError('باید وارد حساب کاربری شوید.');
+                }
+
+                $ticketId = (int)$args['id'];
+                $post = get_post($ticketId);
+
+                if (!$post || $post->post_type !== 'support_ticket') {
+                    return null;
+                }
+
+                $ownerId = (int)get_post_meta($ticketId, 'customer_id', true);
+                $currentUserId = get_current_user_id();
+
+                if ($ownerId !== $currentUserId && !current_user_can('manage_woocommerce')) {
+                    throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
+                }
+
+                return WPGraphQL\Data\DataSource::resolve_post_object($ticketId, $context);
             },
         ]);
     }
