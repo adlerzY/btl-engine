@@ -275,6 +275,7 @@ final class BTL_Price_Engine
         int $active
     ): bool {
         $dirty = false;
+        $old_active = (float)$product->get_price();
 
         if (
             (string)$product->get_regular_price()
@@ -312,6 +313,10 @@ final class BTL_Price_Engine
                 $active
             );
             $dirty = true;
+        }
+
+        if ($dirty && $old_active > 0 && $active < $old_active) {
+            do_action('btl_price_dropped', $product->get_id(), $old_active, $active);
         }
 
         return $dirty;
