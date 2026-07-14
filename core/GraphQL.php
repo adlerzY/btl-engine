@@ -57,6 +57,7 @@ final class BTL_GraphQL
         BTL_GraphQL::register_secret_mutations();
         BTL_GraphQL::register_user_fields();
         BTL_GraphQL::register_support_ticket_fields();
+        BTL_GraphQL::register_review_fields();
     }
 
     private static function register_region_fields(): void
@@ -524,6 +525,14 @@ final class BTL_GraphQL
             }
         ]);
 
+        register_graphql_field('User', 'isStaff', [
+            'type' => 'Boolean',
+            'resolve' => static function ($user) {
+                $userId = (int) ($user->databaseId ?? 0);
+                return $userId ? user_can($userId, 'manage_woocommerce') : false;
+            }
+        ]);
+
         register_graphql_mutation('updateUserAvatar', [
             'inputFields' => [
                 'avatarUrl' => ['type' => ['non_null' => 'String']],
@@ -633,6 +642,16 @@ final class BTL_GraphQL
             'resolve' => static function ($ticket) {
                 $value = get_post_meta($ticket->databaseId, 'linked_order_id', true);
                 return $value !== '' ? (int)$value : null;
+            }
+        ]);
+
+        register_graphql_field('SupportTicket', 'customerName', [
+            'type' => 'String',
+            'resolve' => static function ($ticket) {
+                $customerId = (int) get_post_meta($ticket->databaseId, 'customer_id', true);
+                if (!$customerId) return null;
+                $user = get_userdata($customerId);
+                return $user ? $user->display_name : null;
             }
         ]);
 
@@ -898,5 +917,70 @@ final class BTL_GraphQL
         }
 
         return is_string($data) ? $data : null;
+    }
+
+    private static function register_review_fields(): void
+    {
+        register_graphql_field('Comment', 'parentDatabaseId', [
+            'type' => 'Int',
+            'description' => 'شناسه‌ی نظر مادر. صفر یعنی نظر مستقل است (نه پاسخ).',
+            'resolve' => static function ($comment) {
+                $commentId = $comment->commentId ?? $comment->databaseId ?? 0;
+                if (!$commentId) return 0;
+                $wpComment = get_comment($commentId);
+                return $wpComment ? (int) $wpComment->comment_parent : 0;
+            },
+        ]);
+
+        register_graphql_field('Comment', 'isStaffReply', [
+            'type' => 'Boolean',
+            'resolve' => static function ($comment) {
+                $commentId = $comment->commentId ?? $comment->databaseId ?? 0;
+                if (!$commentId) return false;
+                return (bool) get_comment_meta($commentId, 'btl_is_staff_reply', true);
+            },
+        ]);
+
+        register_graphql_mutation('replyToProductReview', [
+            'inputFields' => [
+                'reviewId' => ['type' => ['non_null' => 'Int']],
+                'content'  => ['type' => ['non_null' => 'String']],
+            ],
+            'outputFields' => [
+                'success' => ['type' => 'Boolean'],
+            ],
+            'mutateAndGetPayload' => function ($input) {
+                if (!current_user_can('manage_woocommerce')) {
+                    throw new GraphQL\Error\UserError('فقط پشتیبانی می‌تواند به نظرات پاسخ دهد.');
+                }
+
+                $review = get_comment((int) $input['reviewId']);
+                if (!$review) {
+                    throw new GraphQL\Error\UserError('نظر مورد نظر یافت نشد.');
+                }
+
+                $content = wp_kses_post(trim($input['content']));
+                if ($content === '') {
+                    throw new GraphQL\Error\UserError('متن پاسخ خالی است.');
+                }
+
+                $commentId = wp_insert_comment([
+                    'comment_post_ID'  => $review->comment_post_ID,
+                    'comment_parent'   => $review->comment_ID,
+                    'comment_content'  => $content,
+                    'user_id'          => get_current_user_id(),
+                    'comment_approved' => 1,
+                    'comment_type'     => 'review',
+                ]);
+
+                if (!$commentId) {
+                    throw new GraphQL\Error\UserError('ثبت پاسخ با خطا مواجه شد.');
+                }
+
+                update_comment_meta($commentId, 'btl_is_staff_reply', 1);
+
+                return ['success' => true];
+            },
+        ]);
     }
 }
