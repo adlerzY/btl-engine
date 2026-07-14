@@ -3,7 +3,20 @@ defined('ABSPATH') || exit;
 
 final class BTL_Sessions
 {
+    private const READY_OPTION = 'btl_sessions_table_ready';
+
     public static function table(): string { global $wpdb; return $wpdb->prefix . 'btl_sessions'; }
+
+    public static function boot(): void
+    {
+        add_action('graphql_register_types', [self::class, 'register'], 10);
+        add_action('init', [self::class, 'maybe_install'], 5);
+    }
+
+    public static function maybe_install(): void
+    {
+        BTL_Helpers::ensureTable(self::READY_OPTION, [self::class, 'install']);
+    }
 
     public static function install(): void
     {
@@ -25,11 +38,6 @@ final class BTL_Sessions
         ) {$charset};";
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         dbDelta($sql);
-    }
-
-    public static function boot(): void
-    {
-        add_action('graphql_register_types', [self::class, 'register'], 10);
     }
 
     public static function register(): void
@@ -150,6 +158,12 @@ final class BTL_Sessions
             "SELECT revoked FROM " . self::table() . " WHERE user_id=%d AND session_id=%s",
             $userId, $sessionId
         ));
+
+        if ($wpdb->last_error) {
+            BTL_Helpers::logger('Sessions::isValid DB error: ' . $wpdb->last_error);
+            return true;
+        }
+
         if (!$row) return true;
         return (int)$row->revoked === 0;
     }

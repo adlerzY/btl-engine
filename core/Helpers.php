@@ -104,4 +104,20 @@ final class BTL_Helpers
             $id
         );
     }
+
+    public static function ensureTable(
+        string $readyOption,
+        callable $installer
+    ): void {
+        if (get_option($readyOption) === '1') {
+            return;
+        }
+
+        try {
+            $installer();
+            update_option($readyOption, '1', false);
+        } catch (Throwable $e) {
+            self::logger("ensureTable({$readyOption}) failed: " . $e->getMessage());
+        }
+    }
 }

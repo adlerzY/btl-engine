@@ -5,6 +5,17 @@ final class BTL_Secure_Fields
 {
     private const CDKEY_TYPE = 'cdkey';
     private const CREDENTIAL_TYPES = ['email', 'password', 'battletag'];
+    private const READY_OPTION = 'btl_secure_fields_table_ready';
+
+    public static function boot(): void
+    {
+        add_action('init', [self::class, 'maybe_install'], 5);
+    }
+
+    public static function maybe_install(): void
+    {
+        BTL_Helpers::ensureTable(self::READY_OPTION, [self::class, 'install']);
+    }
 
     public static function table(): string
     {
@@ -54,7 +65,7 @@ final class BTL_Secure_Fields
         return (int)$count > 0;
     }
 
- 
+
     public static function revealForCustomerCdKey(int $orderId, int $itemId, int $userId): ?string
     {
         return self::revealInternal($orderId, $itemId, self::CDKEY_TYPE, $userId);

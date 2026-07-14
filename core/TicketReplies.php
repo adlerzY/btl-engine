@@ -3,7 +3,19 @@ defined('ABSPATH') || exit;
 
 final class BTL_Ticket_Replies
 {
+    private const READY_OPTION = 'btl_ticket_replies_table_ready';
+
     public static function table(): string { global $wpdb; return $wpdb->prefix . 'btl_ticket_replies'; }
+
+    public static function boot(): void
+    {
+        add_action('init', [self::class, 'maybe_install'], 5);
+    }
+
+    public static function maybe_install(): void
+    {
+        BTL_Helpers::ensureTable(self::READY_OPTION, [self::class, 'install']);
+    }
 
     public static function install(): void
     {

@@ -1,7 +1,22 @@
 <?php
+defined('ABSPATH') || exit;
+
 final class BTL_Notifications
 {
+    private const READY_OPTION = 'btl_notifications_table_ready';
+
     public static function table(): string { global $wpdb; return $wpdb->prefix . 'btl_notifications'; }
+
+    public static function boot(): void
+    {
+        add_action('init', [self::class, 'maybe_install'], 5);
+        add_action('woocommerce_order_status_completed', [self::class, 'notify_order_completed']);
+    }
+
+    public static function maybe_install(): void
+    {
+        BTL_Helpers::ensureTable(self::READY_OPTION, [self::class, 'install']);
+    }
 
     public static function install(): void
     {
@@ -40,15 +55,16 @@ final class BTL_Notifications
         global $wpdb;
         $wpdb->update(self::table(), ['is_read' => 1], ['user_id' => $userId, 'is_read' => 0]);
     }
-}
 
-add_action('woocommerce_order_status_completed', function ($orderId) {
-    $order = wc_get_order($orderId);
-    if (!$order) return;
-    BTL_Notifications::push(
-        (int)$order->get_customer_id(),
-        'سفارش شما تحویل داده شد 🎉',
-        "سفارش #{$order->get_order_number()} با موفقیت تکمیل شد.",
-        '/my-account/orders'
-    );
-});
+    public static function notify_order_completed(int $orderId): void
+    {
+        $order = wc_get_order($orderId);
+        if (!$order) return;
+        self::push(
+            (int)$order->get_customer_id(),
+            'سفارش شما تحویل داده شد 🎉',
+            "سفارش #{$order->get_order_number()} با موفقیت تکمیل شد.",
+            '/my-account/orders'
+        );
+    }
+}

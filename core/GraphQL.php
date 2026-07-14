@@ -501,8 +501,10 @@ final class BTL_GraphQL
 
                 if ($inWishlist) {
                     $ids = array_values(array_diff($ids, [$productId]));
+                    BTL_Wishlist_Alerts::clear_on_remove($userId, $productId);
                 } else {
                     $ids[] = $productId;
+                    BTL_Wishlist_Alerts::snapshot_on_add($userId, $productId);
                 }
 
                 update_user_meta($userId, 'btl_wishlist_ids', $ids);
@@ -610,6 +612,22 @@ final class BTL_GraphQL
 
     private static function register_support_ticket_fields(): void
     {
+        register_graphql_object_type('SupportTicketReply', [
+            'fields' => [
+                'id' => ['type' => 'ID', 'resolve' => fn($r) => (string)$r['id']],
+                'authorRole' => ['type' => 'String', 'resolve' => fn($r) => $r['author_role']],
+                'authorName' => [
+                    'type' => 'String',
+                    'resolve' => static function ($r) {
+                        $u = get_userdata((int)$r['author_id']);
+                        return $u ? $u->display_name : 'کاربر';
+                    }
+                ],
+                'content' => ['type' => 'String', 'resolve' => fn($r) => $r['content']],
+                'createdAt' => ['type' => 'String', 'resolve' => fn($r) => $r['created_at']],
+            ],
+        ]);
+
         register_graphql_field('SupportTicket', 'linkedOrderId', [
             'type' => 'Int',
             'resolve' => static function ($ticket) {
@@ -633,7 +651,19 @@ final class BTL_GraphQL
             }
         ]);
 
-        register_graphql_mutation('createSupportTicket', [
+        register_graphql_field('SupportTicket', 'replies', [
+            'type' => ['list_of' => 'SupportTicketReply'],
+            'resolve' => static function ($ticket) {
+                $ownerId = (int)get_post_meta($ticket->databaseId, 'customer_id', true);
+                $currentUserId = get_current_user_id();
+                if ($ownerId !== $currentUserId && !current_user_can('manage_woocommerce')) {
+                    return [];
+                }
+                return BTL_Ticket_Replies::forTicket($ticket->databaseId);
+            }
+        ]);
+
+        register_graphql_mutation('submitSupportTicket', [
             'inputFields' => [
                 'title' => ['type' => ['non_null' => 'String']],
                 'content' => ['type' => ['non_null' => 'String']],
@@ -669,6 +699,52 @@ final class BTL_GraphQL
                 }
 
                 return ['ticketId' => $postId];
+            },
+        ]);
+
+        register_graphql_mutation('replyToSupportTicket', [
+            'inputFields' => [
+                'ticketId' => ['type' => ['non_null' => 'Int']],
+                'content' => ['type' => ['non_null' => 'String']],
+            ],
+            'outputFields' => [
+                'success' => ['type' => 'Boolean'],
+                'ticketStatus' => ['type' => 'String'],
+            ],
+            'mutateAndGetPayload' => function ($input) {
+                if (!is_user_logged_in()) {
+                    throw new GraphQL\Error\UserError('باید وارد حساب کاربری شوید.');
+                }
+
+                $ticketId = (int)$input['ticketId'];
+                $post = get_post($ticketId);
+                if (!$post || $post->post_type !== 'support_ticket') {
+                    throw new GraphQL\Error\UserError('تیکت یافت نشد.');
+                }
+
+                $ownerId = (int)get_post_meta($ticketId, 'customer_id', true);
+                $currentUserId = get_current_user_id();
+                $isStaff = current_user_can('manage_woocommerce');
+
+                if ($ownerId !== $currentUserId && !$isStaff) {
+                    throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
+                }
+
+                $content = wp_kses_post(trim($input['content']));
+                if ($content === '') {
+                    throw new GraphQL\Error\UserError('متن پاسخ خالی است.');
+                }
+
+                BTL_Ticket_Replies::add($ticketId, $currentUserId, $isStaff ? 'staff' : 'customer', $content);
+
+                $newStatus = $isStaff ? 'answered' : 'open';
+                update_post_meta($ticketId, 'ticket_status', $newStatus);
+
+                if ($isStaff) {
+                    BTL_Notifications::push($ownerId, 'پاسخ جدید در تیکت شما', 'تیکت «' . get_the_title($ticketId) . '» پاسخ داده شد.', '/my-account/tickets/' . $ticketId);
+                }
+
+                return ['success' => true, 'ticketStatus' => $newStatus];
             },
         ]);
 
