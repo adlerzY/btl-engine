@@ -18,6 +18,10 @@ require_once __DIR__ . '/Sessions.php';
 require_once __DIR__ . '/TicketReplies.php';
 require_once __DIR__ . '/TicketAdmin.php';
 require_once __DIR__ . '/WishlistAlerts.php';
+require_once __DIR__ . '/CustomerTickets.php';
+require_once __DIR__ . '/CustomerReviews.php';
+require_once __DIR__ . '/ReviewModeration.php';
+require_once __DIR__ . '/AvatarGuard.php';
 
 BTL_Price_Engine::boot();
 BTL_GraphQL::boot();
@@ -32,3 +36,7 @@ BTL_Sessions::boot();
 BTL_Ticket_Replies::boot();
 BTL_Ticket_Admin::boot();
 BTL_Wishlist_Alerts::boot();
+BTL_Customer_Tickets::boot();
+BTL_Customer_Reviews::boot();
+BTL_Review_Moderation::boot();
+BTL_Avatar_Guard::boot();
