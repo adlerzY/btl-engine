@@ -129,6 +129,89 @@ final class BTL_Customer_Reviews
                 ];
             },
         ]);
+
+        register_graphql_mutation('deleteMyReview', [
+            'inputFields' => [
+                'reviewId' => ['type' => ['non_null' => 'Int']],
+            ],
+            'outputFields' => [
+                'success' => ['type' => 'Boolean'],
+            ],
+            'mutateAndGetPayload' => function ($input) {
+                if (!is_user_logged_in()) {
+                    throw new GraphQL\Error\UserError('باید وارد حساب کاربری شوید.');
+                }
+
+                $userId = get_current_user_id();
+                $comment = get_comment((int) $input['reviewId']);
+
+                if (!$comment || $comment->comment_type !== 'review') {
+                    throw new GraphQL\Error\UserError('نظر یافت نشد.');
+                }
+
+                if ((int) $comment->user_id !== $userId) {
+                    throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
+                }
+
+                $deleted = wp_delete_comment($comment->comment_ID, true);
+
+                if (!$deleted) {
+                    throw new GraphQL\Error\UserError('حذف نظر با خطا مواجه شد.');
+                }
+
+                return ['success' => true];
+            },
+        ]);
+
+        register_graphql_mutation('editMyReview', [
+            'inputFields' => [
+                'reviewId' => ['type' => ['non_null' => 'Int']],
+                'content' => ['type' => ['non_null' => 'String']],
+                'rating' => ['type' => ['non_null' => 'Int']],
+            ],
+            'outputFields' => [
+                'success' => ['type' => 'Boolean'],
+            ],
+            'mutateAndGetPayload' => function ($input) {
+                if (!is_user_logged_in()) {
+                    throw new GraphQL\Error\UserError('باید وارد حساب کاربری شوید.');
+                }
+
+                $userId = get_current_user_id();
+                $comment = get_comment((int) $input['reviewId']);
+
+                if (!$comment || $comment->comment_type !== 'review') {
+                    throw new GraphQL\Error\UserError('نظر یافت نشد.');
+                }
+
+                if ((int) $comment->user_id !== $userId) {
+                    throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
+                }
+
+                if ((string) $comment->comment_approved === '1') {
+                    throw new GraphQL\Error\UserError('نظر تأییدشده قابل ویرایش نیست.');
+                }
+
+                $rating = (int) $input['rating'];
+                if ($rating < 1 || $rating > 5) {
+                    throw new GraphQL\Error\UserError('امتیاز نامعتبر است.');
+                }
+
+                $content = wp_kses_post(trim($input['content']));
+                if ($content === '') {
+                    throw new GraphQL\Error\UserError('متن نظر خالی است.');
+                }
+
+                wp_update_comment([
+                    'comment_ID' => $comment->comment_ID,
+                    'comment_content' => $content,
+                ]);
+
+                update_comment_meta($comment->comment_ID, 'rating', $rating);
+
+                return ['success' => true];
+            },
+        ]);
     }
 
     public static function notify_on_review_reply($commentId, $comment): void
