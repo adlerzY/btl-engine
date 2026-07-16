@@ -439,8 +439,9 @@ final class BTL_GraphQL
                     throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
                 }
 
-                if ($order->get_status() !== 'completed') {
-                    throw new GraphQL\Error\UserError('سفارش هنوز تکمیل نشده است.');
+                $blockedStatuses = ['cancelled', 'refunded', 'failed'];
+                if (in_array($order->get_status(), $blockedStatuses, true)) {
+                    throw new GraphQL\Error\UserError('این سفارش لغو یا بازگشت داده شده است.');
                 }
 
                 $item = WC_Order_Factory::get_order_item($itemId);
@@ -451,7 +452,7 @@ final class BTL_GraphQL
                 $value = BTL_Secure_Fields::revealForCustomerCdKey($orderId, $itemId, $currentUserId);
 
                 if ($value === null) {
-                    throw new GraphQL\Error\UserError('کدی برای این آیتم یافت نشد.');
+                    throw new GraphQL\Error\UserError('کد هنوز آماده نشده است، کمی بعد دوباره تلاش کنید.');
                 }
 
                 return ['value' => $value];

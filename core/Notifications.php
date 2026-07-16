@@ -4,6 +4,7 @@ defined('ABSPATH') || exit;
 final class BTL_Notifications
 {
     private const READY_OPTION = 'btl_notifications_table_ready';
+    private const KEEP_PER_USER = 10;
 
     public static function table(): string { global $wpdb; return $wpdb->prefix . 'btl_notifications'; }
 
@@ -40,9 +41,10 @@ final class BTL_Notifications
     {
         global $wpdb;
         $wpdb->insert(self::table(), ['user_id' => $userId, 'title' => $title, 'body' => $body, 'link' => $link]);
+        self::trimOldForUser($userId);
     }
 
-    public static function forUser(int $userId, int $limit = 20): array
+    public static function forUser(int $userId, int $limit = 10): array
     {
         global $wpdb;
         return $wpdb->get_results($wpdb->prepare(
@@ -66,5 +68,21 @@ final class BTL_Notifications
             "سفارش #{$order->get_order_number()} با موفقیت تکمیل شد.",
             '/my-account/orders'
         );
+    }
+
+    private static function trimOldForUser(int $userId): void
+    {
+        global $wpdb;
+        $table = self::table();
+        $staleIds = $wpdb->get_col($wpdb->prepare(
+            "SELECT id FROM {$table} WHERE user_id=%d ORDER BY id DESC LIMIT 1000 OFFSET %d",
+            $userId,
+            self::KEEP_PER_USER
+        ));
+
+        if (!$staleIds) return;
+
+        $placeholders = implode(',', array_fill(0, count($staleIds), '%d'));
+        $wpdb->query($wpdb->prepare("DELETE FROM {$table} WHERE id IN ({$placeholders})", $staleIds));
     }
 }
