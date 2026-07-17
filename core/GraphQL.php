@@ -148,6 +148,17 @@ final class BTL_GraphQL
             ]
         ]);
 
+        register_graphql_object_type('HeroTabItem', [
+            'fields' => [
+                'tabLabel'    => ['type' => 'String'],
+                'heading'     => ['type' => 'String'],
+                'description' => ['type' => 'String'],
+                'ctaText'     => ['type' => 'String'],
+                'ctaLink'     => ['type' => 'String'],
+                'imageUrl'    => ['type' => 'String'],
+            ]
+        ]);
+
         register_graphql_object_type('SecondaryGalleryItem', [
             'fields' => [
                 'description' => ['type' => 'String'],
@@ -361,6 +372,68 @@ final class BTL_GraphQL
         register_graphql_field('Category', 'banners', [
             'type' => ['list_of' => 'CategoryBannerItem'],
             'resolve' => $banners_resolver
+        ]);
+
+        $hero_tabs_resolver = static function ($term) {
+            $id = $term->term_id ?? $term->databaseId ?? null;
+            if (!$id) {
+                return [];
+            }
+
+            return BTL_Cache::remember("hero_tabs_{$id}", static function () use ($id) {
+                $tabs = [];
+
+                if (function_exists('get_field')) {
+                    $tabs = get_field('hero_tabs_list', 'product_cat_' . $id);
+                }
+
+                if (empty($tabs) || !is_array($tabs)) {
+                    $tabs = get_term_meta($id, 'hero_tabs_list', true);
+                }
+
+                if (!is_array($tabs)) {
+                    return [];
+                }
+
+                $formatted_tabs = [];
+                foreach ($tabs as $item) {
+                    if (!is_array($item)) {
+                        continue;
+                    }
+
+                    $imageUrl = '';
+                    if (!empty($item['image'])) {
+                        if (is_numeric($item['image'])) {
+                            $imageUrl = wp_get_attachment_url((int)$item['image']) ?: '';
+                        } elseif (is_array($item['image']) && isset($item['image']['url'])) {
+                            $imageUrl = $item['image']['url'];
+                        } elseif (is_string($item['image'])) {
+                            $imageUrl = $item['image'];
+                        }
+                    }
+
+                    $formatted_tabs[] = [
+                        'tabLabel'    => $item['tab_label'] ?? '',
+                        'heading'     => $item['heading'] ?? '',
+                        'description' => $item['description'] ?? '',
+                        'ctaText'     => $item['cta_text'] ?? '',
+                        'ctaLink'     => $item['cta_link'] ?? '',
+                        'imageUrl'    => $imageUrl,
+                    ];
+                }
+
+                return $formatted_tabs;
+            }, 'btl', HOUR_IN_SECONDS);
+        };
+
+        register_graphql_field('ProductCategory', 'heroTabs', [
+            'type' => ['list_of' => 'HeroTabItem'],
+            'resolve' => $hero_tabs_resolver
+        ]);
+
+        register_graphql_field('Category', 'heroTabs', [
+            'type' => ['list_of' => 'HeroTabItem'],
+            'resolve' => $hero_tabs_resolver
         ]);
     }
 
