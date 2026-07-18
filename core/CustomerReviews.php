@@ -153,6 +153,10 @@ final class BTL_Customer_Reviews
                     throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
                 }
 
+                if ((string) $comment->comment_approved === '1') {
+                    throw new GraphQL\Error\UserError('نظر تأییدشده قابل حذف نیست.');
+                }
+
                 $deleted = wp_delete_comment($comment->comment_ID, true);
 
                 if (!$deleted) {

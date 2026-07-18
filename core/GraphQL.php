@@ -8,6 +8,8 @@ final class BTL_GraphQL
     {
         add_filter('register_post_type_args', [self::class, 'expose_support_ticket_type'], 10, 2);
         add_filter('graphql_post_object_connection_query_args', [self::class, 'restrict_support_ticket_query'], 10, 5);
+        add_filter('graphql_post_object_connection_query_args', [self::class, 'apply_region_filter'], 10, 5);
+        add_action('woocommerce_save_product_variation', [self::class, 'invalidate_region_cache'], 100);
         add_action('graphql_register_types', [self::class, 'register'], 10);
     }
 
@@ -46,10 +48,103 @@ final class BTL_GraphQL
         return $query_args;
     }
 
+    public static function apply_region_filter($query_args, $source, $args, $context, $info)
+    {
+        $postTypes = $query_args['post_type'] ?? [];
+        $postTypes = is_array($postTypes) ? $postTypes : [$postTypes];
+
+        if (!in_array('product', $postTypes, true)) {
+            return $query_args;
+        }
+
+        $regionSlug = trim((string)($args['where']['regionSlug'] ?? ''));
+        if ($regionSlug === '') {
+            return $query_args;
+        }
+
+        $excludedIds = self::region_excluded_product_ids($regionSlug);
+        if (empty($excludedIds)) {
+            return $query_args;
+        }
+
+        $existing = $query_args['post__not_in'] ?? [];
+        $existing = is_array($existing) ? $existing : [$existing];
+
+        $query_args['post__not_in'] = array_values(array_unique(array_merge($existing, $excludedIds)));
+
+        return $query_args;
+    }
+
+    private static function region_excluded_product_ids(string $regionSlug): array
+    {
+        $aliases = self::region_aliases($regionSlug);
+        $cacheKey = 'excluded_' . md5(implode('|', $aliases));
+
+        return BTL_Cache::remember($cacheKey, static function () use ($aliases) {
+            global $wpdb;
+
+            $restrictedIds = $wpdb->get_col(
+                "SELECT DISTINCT p.post_parent
+                 FROM {$wpdb->posts} p
+                 INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID
+                 WHERE p.post_type = 'product_variation'
+                   AND p.post_status = 'publish'
+                   AND (pm.meta_key LIKE 'attribute_%region%' OR pm.meta_key LIKE '%ریجن%')"
+            );
+
+            if (!$restrictedIds) {
+                return [];
+            }
+
+            $placeholders = implode(',', array_fill(0, count($aliases), '%s'));
+            $matchingIds = $wpdb->get_col($wpdb->prepare(
+                "SELECT DISTINCT p.post_parent
+                 FROM {$wpdb->posts} p
+                 INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID
+                 WHERE p.post_type = 'product_variation'
+                   AND p.post_status = 'publish'
+                   AND (pm.meta_key LIKE 'attribute_%region%' OR pm.meta_key LIKE '%ریجن%')
+                   AND pm.meta_value IN ({$placeholders})",
+                $aliases
+            ));
+
+            return array_values(array_map('intval', array_diff($restrictedIds, $matchingIds)));
+        }, 'btl_regions', 15 * MINUTE_IN_SECONDS);
+    }
+
+    private static function region_aliases(string $regionSlug): array
+    {
+        $map = [
+            'eu' => ['eu', 'eu-global', 'اروپا', 'europe'],
+            'us' => ['us', 'امریکا', 'آمریکا', 'america', 'usa'],
+            'tr' => ['tr', 'ترکیه', 'turkey'],
+        ];
+
+        $slug = strtolower(trim($regionSlug));
+
+        if (isset($map[$slug])) {
+            return $map[$slug];
+        }
+
+        foreach ($map as $aliases) {
+            if (in_array($slug, array_map('strtolower', $aliases), true)) {
+                return $aliases;
+            }
+        }
+
+        return [$regionSlug];
+    }
+
+    public static function invalidate_region_cache(): void
+    {
+        BTL_Cache::flushGroup('btl_regions');
+    }
+
     public static function register(): void
     {
         BTL_GraphQL::register_objects();
         BTL_GraphQL::register_region_fields();
+        BTL_GraphQL::register_region_filter();
         BTL_GraphQL::register_product_fields();
         BTL_GraphQL::register_category_fields();
         BTL_GraphQL::register_variation_fields();
@@ -92,6 +187,14 @@ final class BTL_GraphQL
                     return is_string($flag_value) && !empty($flag_value) ? $flag_value : null;
                 }, 'btl_media', DAY_IN_SECONDS);
             }
+        ]);
+    }
+
+    private static function register_region_filter(): void
+    {
+        register_graphql_field('RootQueryToProductConnectionWhereArgs', 'regionSlug', [
+            'type' => 'String',
+            'description' => 'فیلتر محصولات بر اساس ریجن فعال (بر مبنای attribute ریجن واریانت‌ها)',
         ]);
     }
 
@@ -1011,7 +1114,17 @@ final class BTL_GraphQL
             'resolve' => static function ($comment) {
                 $commentId = $comment->commentId ?? $comment->databaseId ?? 0;
                 if (!$commentId) return false;
-                return (bool) get_comment_meta($commentId, 'btl_is_staff_reply', true);
+
+                if ((bool) get_comment_meta($commentId, 'btl_is_staff_reply', true)) {
+                    return true;
+                }
+
+                $wpComment = get_comment($commentId);
+                if ($wpComment && (int) $wpComment->comment_parent > 0 && (int) $wpComment->user_id > 0) {
+                    return user_can((int) $wpComment->user_id, 'manage_woocommerce');
+                }
+
+                return false;
             },
         ]);
 
