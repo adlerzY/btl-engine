@@ -192,10 +192,19 @@ final class BTL_GraphQL
 
     private static function register_region_filter(): void
     {
-        register_graphql_field('RootQueryToProductConnectionWhereArgs', 'regionSlug', [
-            'type' => 'String',
-            'description' => 'فیلتر محصولات بر اساس ریجن فعال (بر مبنای attribute ریجن واریانت‌ها)',
-        ]);
+        $description = 'فیلتر محصولات بر اساس ریجن فعال (بر مبنای attribute ریجن واریانت‌ها)';
+
+        $possibleWhereArgsTypes = [
+            'RootQueryToProductConnectionWhereArgs',
+            'RootQueryToProductUnionConnectionWhereArgs',
+        ];
+
+        foreach ($possibleWhereArgsTypes as $whereArgsType) {
+            register_graphql_field($whereArgsType, 'regionSlug', [
+                'type' => 'String',
+                'description' => $description,
+            ]);
+        }
     }
 
     private static function register_objects(): void
