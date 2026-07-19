@@ -41,6 +41,23 @@ final class BTL_Customer_Reviews
             ],
         ]);
 
+        register_graphql_field('RootQuery', 'pendingReviewsCount', [
+            'type' => 'Int',
+            'resolve' => static function () {
+                if (!current_user_can('manage_woocommerce')) {
+                    return 0;
+                }
+
+                return (int) BTL_Cache::remember('pending_reviews_count', static function () {
+                    return (int) get_comments([
+                        'type' => 'review',
+                        'status' => 'hold',
+                        'count' => true,
+                    ]);
+                }, 'btl', 60);
+            },
+        ]);
+
         register_graphql_field('RootQuery', 'myReviews', [
             'type' => 'MyReviewsConnection',
             'args' => [

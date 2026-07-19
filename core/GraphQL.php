@@ -1175,6 +1175,11 @@ final class BTL_GraphQL
 
                 update_comment_meta($commentId, 'btl_is_staff_reply', 1);
 
+                $product = wc_get_product((int) $review->comment_post_ID);
+                if ($product && function_exists('btl_queue_revalidation')) {
+                    btl_queue_revalidation(["product-{$product->get_slug()}"]);
+                }
+
                 return ['success' => true];
             },
         ]);

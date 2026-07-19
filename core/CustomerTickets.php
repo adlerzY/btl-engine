@@ -90,6 +90,63 @@ final class BTL_Customer_Tickets
                 ];
             },
         ]);
+
+        register_graphql_field('RootQuery', 'adminOpenTickets', [
+            'type' => ['list_of' => 'SupportTicket'],
+            'args' => [
+                'first' => ['type' => 'Int'],
+            ],
+            'resolve' => static function ($root, $args, $context) {
+                if (!current_user_can('manage_woocommerce')) {
+                    throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
+                }
+
+                $first = min(max((int)($args['first'] ?? 10), 1), 50);
+
+                $posts = BTL_Cache::remember("admin_open_tickets_{$first}", static function () use ($first) {
+                    $query = new WP_Query([
+                        'post_type' => 'support_ticket',
+                        'post_status' => 'publish',
+                        'posts_per_page' => $first,
+                        'orderby' => 'date',
+                        'order' => 'ASC',
+                        'meta_query' => [[
+                            'key' => 'ticket_status',
+                            'value' => 'open',
+                            'compare' => '=',
+                        ]],
+                    ]);
+
+                    return $query->posts;
+                }, 'btl', 60);
+
+                return array_map(
+                    static fn($post) => WPGraphQL\Data\DataSource::resolve_post_object($post->ID, $context),
+                    $posts
+                );
+            },
+        ]);
+
+        register_graphql_field('RootQuery', 'adminOpenTicketsCount', [
+            'type' => 'Int',
+            'resolve' => static function () {
+                if (!current_user_can('manage_woocommerce')) {
+                    return 0;
+                }
+
+                return (int) BTL_Cache::remember('admin_open_tickets_count', static function () {
+                    global $wpdb;
+
+                    return (int) $wpdb->get_var($wpdb->prepare(
+                        "SELECT COUNT(*) FROM {$wpdb->posts} p
+                         INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID
+                         WHERE p.post_type = %s AND p.post_status = %s
+                           AND pm.meta_key = %s AND pm.meta_value = %s",
+                        'support_ticket', 'publish', 'ticket_status', 'open'
+                    ));
+                }, 'btl', 60);
+            },
+        ]);
     }
 
     public static function encodeCursor(int $offset): string
