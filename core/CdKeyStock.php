@@ -128,13 +128,36 @@ final class BTL_CdKey_Stock
         foreach ($order->get_items() as $itemId => $item) {
             if (!$item instanceof WC_Order_Item_Product) continue;
             if ($item->get_meta('روش تحویل') !== 'code') continue;
-            if (BTL_Secure_Fields::exists((int)$orderId, (int)$itemId, 'cdkey')) continue;
+
+            $needed = max(1, (int)$item->get_quantity());
+            $already = BTL_Secure_Fields::countByOrderItem((int)$orderId, (int)$itemId, 'cdkey');
+            $remaining = $needed - $already;
+
+            if ($remaining <= 0) continue;
 
             $productId = $item->get_product_id();
             $variationId = $item->get_variation_id() ?: 0;
 
-            if (!self::assignNext($productId, $variationId, (int)$orderId, (int)$itemId)) {
-                BTL_Helpers::logger("CdKeyStock: no available key for product {$productId} variation {$variationId} (order {$orderId}, item {$itemId})");
+            $assignedThisRun = 0;
+            for ($i = 0; $i < $remaining; $i++) {
+                if (self::assignNext($productId, $variationId, (int)$orderId, (int)$itemId)) {
+                    $assignedThisRun++;
+                    continue;
+                }
+
+                BTL_Helpers::logger(
+                    "CdKeyStock: insufficient stock for product {$productId} variation {$variationId} " .
+                    "(order {$orderId}, item {$itemId}) — assigned " . ($already + $assignedThisRun) . " of {$needed} needed"
+                );
+
+                $order->add_order_note(sprintf(
+                    '⚠️ موجودی کد سی‌دی‌کی کافی نیست — آیتم #%d: %d از %d کد تخصیص یافت. لطفاً از بخش ویرایش سفارش، کد(های) باقی‌مانده را دستی وارد کنید.',
+                    $itemId,
+                    $already + $assignedThisRun,
+                    $needed
+                ));
+
+                break;
             }
         }
     }
@@ -158,6 +181,7 @@ final class BTL_CdKey_Stock
 
         register_graphql_field('LineItem', 'cdkeyReady', [
             'type' => 'Boolean',
+            'description' => 'true فقط وقتی تمام کدهای مورد نیاز (به تعداد quantity) تخصیص یافته باشند.',
             'resolve' => static function ($item) {
                 $itemId = (int)($item->databaseId ?? 0);
                 if (!$itemId) return false;
@@ -166,8 +190,25 @@ final class BTL_CdKey_Stock
                 if (!$orderItem) return false;
 
                 $orderId = (int)$orderItem->get_order_id();
+                $needed = max(1, (int)$orderItem->get_quantity());
 
-                return BTL_Secure_Fields::exists($orderId, $itemId, 'cdkey');
+                return BTL_Secure_Fields::countByOrderItem($orderId, $itemId, 'cdkey') >= $needed;
+            },
+        ]);
+
+        register_graphql_field('LineItem', 'cdkeyAssignedCount', [
+            'type' => 'Int',
+            'description' => 'تعداد کدهایی که تا این لحظه برای این آیتم تخصیص یافته‌اند (ممکن است کمتر از quantity باشد).',
+            'resolve' => static function ($item) {
+                $itemId = (int)($item->databaseId ?? 0);
+                if (!$itemId) return 0;
+
+                $orderItem = WC_Order_Factory::get_order_item($itemId);
+                if (!$orderItem) return 0;
+
+                $orderId = (int)$orderItem->get_order_id();
+
+                return BTL_Secure_Fields::countByOrderItem($orderId, $itemId, 'cdkey');
             },
         ]);
     }

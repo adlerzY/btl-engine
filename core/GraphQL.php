@@ -599,7 +599,7 @@ final class BTL_GraphQL
                 'fieldType' => ['type' => ['non_null' => 'String']],
             ],
             'outputFields' => [
-                'value' => ['type' => 'String'],
+                'values' => ['type' => ['list_of' => 'String']],
             ],
             'mutateAndGetPayload' => function ($input) {
                 if (!is_user_logged_in()) {
@@ -634,13 +634,14 @@ final class BTL_GraphQL
                     throw new GraphQL\Error\UserError('آیتم نامعتبر است.');
                 }
 
-                $value = BTL_Secure_Fields::revealForCustomerCdKey($orderId, $itemId, $currentUserId);
+                // به تعداد quantity این آیتم، تمام کدهای تخصیص‌یافته را برمی‌گرداند — نه فقط یکی
+                $values = BTL_Secure_Fields::revealAllForCustomerCdKey($orderId, $itemId, $currentUserId);
 
-                if ($value === null) {
+                if (empty($values)) {
                     throw new GraphQL\Error\UserError('کد هنوز آماده نشده است، کمی بعد دوباره تلاش کنید.');
                 }
 
-                return ['value' => $value];
+                return ['values' => $values];
             },
         ]);
     }

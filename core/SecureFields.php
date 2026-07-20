@@ -57,18 +57,51 @@ final class BTL_Secure_Fields
 
     public static function exists(int $orderId, int $itemId, string $fieldType): bool
     {
+        return self::countByOrderItem($orderId, $itemId, $fieldType) > 0;
+    }
+
+    public static function countByOrderItem(int $orderId, int $itemId, string $fieldType): int
+    {
         global $wpdb;
         $count = $wpdb->get_var($wpdb->prepare(
             "SELECT COUNT(*) FROM " . self::table() . " WHERE order_id=%d AND item_id=%d AND field_type=%s",
             $orderId, $itemId, $fieldType
         ));
-        return (int)$count > 0;
+        return (int)$count;
     }
 
-
-    public static function revealForCustomerCdKey(int $orderId, int $itemId, int $userId): ?string
+    public static function revealAllForCustomerCdKey(int $orderId, int $itemId, int $userId): array
     {
-        return self::revealInternal($orderId, $itemId, self::CDKEY_TYPE, $userId);
+        global $wpdb;
+        $table = self::table();
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM {$table} WHERE order_id=%d AND item_id=%d AND field_type=%s ORDER BY id ASC",
+            $orderId, $itemId, self::CDKEY_TYPE
+        ));
+
+        if (!$rows) {
+            return [];
+        }
+
+        $values = [];
+        foreach ($rows as $row) {
+            $plain = BTL_Secure_Vault::decrypt($row->ciphertext);
+            if ($plain === null) {
+                BTL_Helpers::logger("SecureFields: decrypt failed for row {$row->id} (order {$orderId}, item {$itemId})");
+                continue;
+            }
+
+            $values[] = $plain;
+
+            if ($row->revealed_at === null) {
+                $wpdb->update($table, [
+                    'revealed_at' => current_time('mysql', true),
+                    'revealed_by' => $userId,
+                ], ['id' => $row->id]);
+            }
+        }
+
+        return $values;
     }
 
 
