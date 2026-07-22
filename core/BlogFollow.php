@@ -126,30 +126,37 @@ final class BTL_Blog_Follow
         if ($newStatus !== 'publish') return;
 
         $categories = get_the_category($post->ID);
-        if (!$categories) return;
-
         $tags = ['all-blog-posts', "post-{$post->post_name}"];
         $catIds = [];
 
-        foreach ($categories as $cat) {
-            $tags[] = "blog-category-{$cat->slug}";
-            $catIds[] = (int)$cat->term_id;
+        if ($categories) {
+            foreach ($categories as $cat) {
+                $tags[] = "blog-category-{$cat->slug}";
+                $catIds[] = (int)$cat->term_id;
 
-            if ($cat->parent) {
-                $catIds[] = (int)$cat->parent;
-                $parentTerm = get_term($cat->parent, 'category');
-                if ($parentTerm && !is_wp_error($parentTerm)) {
-                    $tags[] = "blog-category-{$parentTerm->slug}";
+                if ($cat->parent) {
+                    $catIds[] = (int)$cat->parent;
+                    $parentTerm = get_term($cat->parent, 'category');
+                    if ($parentTerm && !is_wp_error($parentTerm)) {
+                        $tags[] = "blog-category-{$parentTerm->slug}";
+                    }
                 }
             }
         }
         $catIds = array_unique($catIds);
 
+        $postTags = get_the_tags($post->ID);
+        if ($postTags) {
+            foreach ($postTags as $tag) {
+                $tags[] = "blog-tag-{$tag->slug}";
+            }
+        }
+
         if (function_exists('btl_queue_revalidation')) {
             btl_queue_revalidation(array_unique($tags));
         }
 
-        if ($oldStatus === 'publish') return;
+        if ($oldStatus === 'publish' || !$categories) return;
 
         $link = '/blog/' . $categories[0]->slug . '/' . $post->post_name;
         $notified = [];

@@ -25,7 +25,10 @@ final class BTL_Blog_Comments
                 'postId' => ['type' => ['non_null' => 'Int']],
                 'content' => ['type' => ['non_null' => 'String']],
             ],
-            'outputFields' => ['success' => ['type' => 'Boolean']],
+            'outputFields' => [
+                'success' => ['type' => 'Boolean'],
+                'approved' => ['type' => 'Boolean'],
+            ],
             'mutateAndGetPayload' => function ($input) {
                 if (!is_user_logged_in()) throw new GraphQL\Error\UserError('باید وارد حساب کاربری شوید.');
 
@@ -47,7 +50,12 @@ final class BTL_Blog_Comments
 
                 BTL_Cache::delete("post_comments_count_{$postId}");
 
-                return ['success' => true];
+                $comment = get_comment($commentId);
+
+                return [
+                    'success' => true,
+                    'approved' => $comment && (string)$comment->comment_approved === '1',
+                ];
             },
         ]);
 
@@ -56,7 +64,10 @@ final class BTL_Blog_Comments
                 'commentId' => ['type' => ['non_null' => 'Int']],
                 'content' => ['type' => ['non_null' => 'String']],
             ],
-            'outputFields' => ['success' => ['type' => 'Boolean']],
+            'outputFields' => [
+                'success' => ['type' => 'Boolean'],
+                'approved' => ['type' => 'Boolean'],
+            ],
             'mutateAndGetPayload' => function ($input) {
                 if (!is_user_logged_in()) throw new GraphQL\Error\UserError('باید وارد حساب کاربری شوید.');
 
@@ -99,7 +110,12 @@ final class BTL_Blog_Comments
                     );
                 }
 
-                return ['success' => true];
+                $comment = get_comment($commentId);
+
+                return [
+                    'success' => true,
+                    'approved' => $comment && (string)$comment->comment_approved === '1',
+                ];
             },
         ]);
     }

@@ -12,7 +12,7 @@ final class BTL_Review_Moderation
     public static function guard_repeat_approval($approved, array $commentdata)
     {
         $type = $commentdata['comment_type'] ?? '';
-        if ($type !== 'review') {
+        if (!in_array($type, ['review', 'comment'], true)) {
             return $approved;
         }
 
@@ -30,7 +30,7 @@ final class BTL_Review_Moderation
 
     public static function revalidate_on_status_change($newStatus, $oldStatus, $comment): void
     {
-        if (!$comment instanceof WP_Comment || $comment->comment_type !== 'review') {
+        if (!$comment instanceof WP_Comment || !in_array($comment->comment_type, ['review', 'comment'], true)) {
             return;
         }
 
@@ -42,11 +42,19 @@ final class BTL_Review_Moderation
             return;
         }
 
-        $product = wc_get_product((int)$comment->comment_post_ID);
-        if (!$product || !function_exists('btl_queue_revalidation')) {
+        if ($comment->comment_type === 'review') {
+            $product = wc_get_product((int)$comment->comment_post_ID);
+            if ($product && function_exists('btl_queue_revalidation')) {
+                btl_queue_revalidation(["product-{$product->get_slug()}"]);
+            }
             return;
         }
 
-        btl_queue_revalidation(["product-{$product->get_slug()}"]);
+        BTL_Cache::delete("post_comments_count_{$comment->comment_post_ID}");
+
+        $slug = get_post_field('post_name', $comment->comment_post_ID);
+        if ($slug && function_exists('btl_queue_revalidation')) {
+            btl_queue_revalidation(["post-{$slug}"]);
+        }
     }
 }
