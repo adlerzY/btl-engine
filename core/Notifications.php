@@ -17,6 +17,7 @@ final class BTL_Notifications
     public static function maybe_install(): void
     {
         BTL_Helpers::ensureTable(self::READY_OPTION, [self::class, 'install']);
+        self::maybe_add_type_column();
     }
 
     public static function install(): void
@@ -26,22 +27,40 @@ final class BTL_Notifications
         $sql = "CREATE TABLE {$table} (
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             user_id BIGINT UNSIGNED NOT NULL,
+            type VARCHAR(20) NOT NULL DEFAULT 'engagement',
             title VARCHAR(190) NOT NULL,
             body TEXT NOT NULL,
             link VARCHAR(190) NULL,
             is_read TINYINT(1) NOT NULL DEFAULT 0,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            KEY user_id (user_id, is_read)
+            KEY user_id (user_id, is_read),
+            KEY user_type (user_id, type)
         ) {$charset};";
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         dbDelta($sql);
     }
 
-    public static function push(int $userId, string $title, string $body, ?string $link = null): void
+    private static function maybe_add_type_column(): void
     {
         global $wpdb;
-        $wpdb->insert(self::table(), ['user_id' => $userId, 'title' => $title, 'body' => $body, 'link' => $link]);
-        self::trimOldForUser($userId);
+        $table = self::table();
+        $exists = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME='type'",
+            DB_NAME, $table
+        ));
+        if ((int)$exists === 0) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN type VARCHAR(20) NOT NULL DEFAULT 'engagement' AFTER user_id");
+            $wpdb->query("ALTER TABLE {$table} ADD KEY user_type (user_id, type)");
+        }
+    }
+
+    public static function push(int $userId, string $title, string $body, ?string $link = null, string $type = 'engagement'): void
+    {
+        global $wpdb;
+        $wpdb->insert(self::table(), [
+            'user_id' => $userId, 'type' => $type, 'title' => $title, 'body' => $body, 'link' => $link,
+        ]);
+        self::trimOldForUser($userId, $type);
     }
 
     public static function forUser(int $userId, int $limit = 10): array
@@ -70,14 +89,13 @@ final class BTL_Notifications
         );
     }
 
-    private static function trimOldForUser(int $userId): void
+    private static function trimOldForUser(int $userId, string $type): void
     {
         global $wpdb;
         $table = self::table();
         $staleIds = $wpdb->get_col($wpdb->prepare(
-            "SELECT id FROM {$table} WHERE user_id=%d ORDER BY id DESC LIMIT 1000 OFFSET %d",
-            $userId,
-            self::KEEP_PER_USER
+            "SELECT id FROM {$table} WHERE user_id=%d AND type=%s ORDER BY id DESC LIMIT 1000 OFFSET %d",
+            $userId, $type, self::KEEP_PER_USER
         ));
 
         if (!$staleIds) return;

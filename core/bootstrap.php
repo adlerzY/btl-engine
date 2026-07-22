@@ -24,6 +24,9 @@ require_once __DIR__ . '/ReviewModeration.php';
 require_once __DIR__ . '/AvatarGuard.php';
 require_once __DIR__ . '/CdKeyStock.php';
 require_once __DIR__ . '/CdKeyAdmin.php';
+require_once __DIR__ . '/BlogFollow.php';
+require_once __DIR__ . '/PostRatings.php';
+require_once __DIR__ . '/BlogComments.php';
 
 BTL_Price_Engine::boot();
 BTL_GraphQL::boot();
@@ -44,3 +47,6 @@ BTL_Review_Moderation::boot();
 BTL_Avatar_Guard::boot();
 BTL_CdKey_Stock::boot();
 BTL_CdKey_Admin::boot();
+BTL_Blog_Follow::boot();
+BTL_Post_Ratings::boot();
+BTL_Blog_Comments::boot();
