@@ -38,11 +38,13 @@ final class BTL_Blog_Comments
                 $content = wp_kses_post(trim($input['content']));
                 if ($content === '') throw new GraphQL\Error\UserError('متن نظر خالی است.');
 
+                $isStaff = current_user_can('manage_woocommerce');
+
                 $commentId = wp_insert_comment([
                     'comment_post_ID' => $postId,
                     'comment_content' => $content,
                     'user_id' => get_current_user_id(),
-                    'comment_approved' => 1,
+                    'comment_approved' => $isStaff ? 1 : 0,
                     'comment_type' => 'comment',
                 ]);
 
@@ -87,7 +89,7 @@ final class BTL_Blog_Comments
                     'comment_parent' => $parent->comment_ID,
                     'comment_content' => $content,
                     'user_id' => $currentUserId,
-                    'comment_approved' => 1,
+                    'comment_approved' => $isStaff ? 1 : 0,
                     'comment_type' => 'comment',
                 ]);
 
@@ -100,7 +102,7 @@ final class BTL_Blog_Comments
                 BTL_Cache::delete("post_comments_count_{$parent->comment_post_ID}");
 
                 $authorId = (int)$parent->user_id;
-                if ($authorId && $authorId !== $currentUserId) {
+                if ($isStaff && $authorId && $authorId !== $currentUserId) {
                     BTL_Notifications::push(
                         $authorId,
                         'پاسخ جدید به نظر شما 💬',
