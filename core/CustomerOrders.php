@@ -74,6 +74,15 @@ final class BTL_Customer_Orders
                         continue;
                     }
 
+                    $statusCheckId = $product->is_type('variation') ? $product->get_parent_id() : $product->get_id();
+                    if (get_post_status($statusCheckId) !== 'publish') {
+                        $order->delete(true);
+                        throw new GraphQL\Error\UserError(sprintf(
+                            'محصول «%s» در حال حاضر برای خرید در دسترس نیست.',
+                            $product->get_name()
+                        ));
+                    }
+
                     $deliveryMethod = '';
                     $requestedRegion = '';
                     foreach (($li['metaData'] ?? []) as $meta) {

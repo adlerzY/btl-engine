@@ -27,15 +27,17 @@ final class BTL_Order_Fulfillment
         $deliveryMethod = $item->get_meta('روش تحویل');
 
         if ($deliveryMethod === 'code') {
-            $hasKey = BTL_Secure_Fields::exists($orderId, $item_id, 'cdkey');
+            $needed = max(1, (int)$item->get_quantity());
+            $assigned = BTL_Secure_Fields::countByOrderItem($orderId, $item_id, 'cdkey');
             $nonce = wp_create_nonce('btl_cdkey_' . $item_id);
             echo '<div class="btl-box" style="margin-top:8px;padding:8px;border:1px solid #ccd0d4;background:#f8f9fa;">';
             echo '<strong>کد سی‌دی‌کی:</strong> ';
-            if ($hasKey) {
-                echo '<span style="color:#2271b1;">✓ کد ثبت و رمزنگاری شده است.</span>';
+            if ($assigned >= $needed) {
+                echo '<span style="color:#2271b1;">✓ ' . esc_html((string)$assigned) . ' از ' . esc_html((string)$needed) . ' کد ثبت و رمزنگاری شده است.</span>';
             } else {
+                echo '<span style="color:#d63638;">' . esc_html((string)$assigned) . ' از ' . esc_html((string)$needed) . ' کد تخصیص یافته.</span> ';
                 echo '<input type="text" class="btl-cdkey-input" dir="ltr" style="width:220px;" placeholder="کد را وارد کنید" />';
-                echo '<button type="button" class="button btl-cdkey-save" data-item="' . esc_attr($item_id) . '" data-order="' . esc_attr($orderId) . '" data-nonce="' . esc_attr($nonce) . '">ذخیره‌ی رمزنگاری‌شده</button>';
+                echo '<button type="button" class="button btl-cdkey-save" data-item="' . esc_attr($item_id) . '" data-order="' . esc_attr($orderId) . '" data-nonce="' . esc_attr($nonce) . '">افزودن کد</button>';
             }
             echo '</div>';
         }

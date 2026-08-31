@@ -746,7 +746,7 @@ final class BTL_GraphQL
 
                 $avatarUrl = esc_url_raw($input['avatarUrl']);
 
-                if (strpos($avatarUrl, '/avatars/') !== 0) {
+                if (!preg_match('#^/avatars/(users|admin)/[A-Za-z0-9_\-]+\.(webp|png|jpe?g)$#', $avatarUrl)) {
                     throw new GraphQL\Error\UserError('مسیر آواتار نامعتبر است.');
                 }
 

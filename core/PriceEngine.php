@@ -277,9 +277,9 @@ final class BTL_Price_Engine
         $old_active = (float)$product->get_price();
 
         if (
-            (string)$product->get_regular_price()
+            (float)$product->get_regular_price()
             !==
-            (string)$regular
+            (float)$regular
         ) {
             $product->set_regular_price(
                 $regular
@@ -287,26 +287,28 @@ final class BTL_Price_Engine
             $dirty = true;
         }
 
-        $sale_value =
-            $sale === null
-                ? ''
-                : (string)$sale;
+        $current_sale =
+            (string)$product->get_sale_price();
 
-        if (
-            (string)$product->get_sale_price()
-            !==
-            $sale_value
+        if ($sale === null) {
+            if ($current_sale !== '') {
+                $product->set_sale_price('');
+                $dirty = true;
+            }
+        } elseif (
+            $current_sale === '' ||
+            (float)$current_sale !== (float)$sale
         ) {
             $product->set_sale_price(
-                $sale_value
+                (string)$sale
             );
             $dirty = true;
         }
 
         if (
-            (string)$product->get_price()
+            (float)$product->get_price()
             !==
-            (string)$active
+            (float)$active
         ) {
             $product->set_price(
                 $active

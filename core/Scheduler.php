@@ -71,7 +71,10 @@ final class BTL_Scheduler
                 (int)$post_id
             ) === 'product'
         ) {
-            self::schedule();
+            BTL_Price_Engine::calculate(
+                (int)$post_id,
+                true
+            );
         }
     }
 
