@@ -120,4 +120,14 @@ final class BTL_Helpers
             self::logger("ensureTable({$readyOption}) failed: " . $e->getMessage());
         }
     }
+
+    public static function clientIp(): string
+    {
+        $xff = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
+        if ($xff) {
+            $parts = explode(',', $xff);
+            return trim($parts[0]);
+        }
+        return sanitize_text_field($_SERVER['REMOTE_ADDR'] ?? '');
+    }
 }

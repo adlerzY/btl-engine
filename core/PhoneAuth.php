@@ -28,7 +28,7 @@ final class BTL_Phone_Auth
                     throw new GraphQL\Error\UserError('شماره موبایل نامعتبر است.');
                 }
 
-                $ip = self::clientIp();
+                $ip = BTL_Helpers::clientIp();
 
                 BTL_Otp::request($phone, 'sms', self::PURPOSE, $ip, static function (string $code) use ($phone) {
                     $gateway = new BTL_NirSms_Gateway();
@@ -142,12 +142,18 @@ final class BTL_Phone_Auth
                     throw new GraphQL\Error\UserError('شماره موبایل نامعتبر است.');
                 }
 
+                $ip = BTL_Helpers::clientIp();
+                BTL_Login_Throttle::assertAllowed($phone, $ip);
+
                 $userId = self::findUserByPhone($phone);
                 $user = $userId ? get_userdata($userId) : null;
 
                 if (!$user || !wp_check_password($input['password'], $user->user_pass, $userId)) {
+                    BTL_Login_Throttle::recordAttempt($phone, $ip);
                     throw new GraphQL\Error\UserError('شماره موبایل یا رمز عبور اشتباه است.');
                 }
+
+                BTL_Login_Throttle::clearAttempts($phone);
 
                 if (user_can($userId, 'manage_woocommerce')) {
                     $ticket = BTL_Admin_Totp::issuePendingTicket($userId);
@@ -253,15 +259,5 @@ final class BTL_Phone_Auth
         if (strlen($digits) === 10 && str_starts_with($digits, '9')) $digits = '0' . $digits;
 
         return preg_match('/^09\d{9}$/', $digits) ? $digits : null;
-    }
-
-    private static function clientIp(): string
-    {
-        $xff = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
-        if ($xff) {
-            $parts = explode(',', $xff);
-            return trim($parts[0]);
-        }
-        return sanitize_text_field($_SERVER['REMOTE_ADDR'] ?? '');
     }
 }

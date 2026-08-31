@@ -94,6 +94,7 @@ final class BTL_Otp
             'code_hash' => password_hash($code, PASSWORD_BCRYPT),
             'ip_address' => $ip ?: null,
             'expires_at' => gmdate('Y-m-d H:i:s', time() + self::EXPIRES_SECONDS),
+            'created_at' => current_time('mysql', true),
         ]);
 
         if (!$sendFn($code)) {

@@ -23,15 +23,24 @@ final class BTL_Admin_Login
             ],
             'mutateAndGetPayload' => function ($input) {
                 $login = sanitize_text_field($input['username']);
+                $identifier = strtolower($login);
+                $ip = BTL_Helpers::clientIp();
+
+                BTL_Login_Throttle::assertAllowed($identifier, $ip);
+
                 $user = is_email($login) ? get_user_by('email', $login) : get_user_by('login', $login);
 
                 if (!$user || !wp_check_password($input['password'], $user->user_pass, $user->ID)) {
+                    BTL_Login_Throttle::recordAttempt($identifier, $ip);
                     throw new GraphQL\Error\UserError('نام کاربری یا رمز عبور اشتباه است.');
                 }
 
                 if (!user_can($user->ID, 'manage_woocommerce')) {
+                    BTL_Login_Throttle::recordAttempt($identifier, $ip);
                     throw new GraphQL\Error\UserError('این مسیر ورود فقط برای اعضای تیم پشتیبانی است.');
                 }
+
+                BTL_Login_Throttle::clearAttempts($identifier);
 
                 $ticket = BTL_Admin_Totp::issuePendingTicket($user->ID);
 
