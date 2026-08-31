@@ -21,146 +21,77 @@ final class BTL_Admin
         );
     }
 
-    public static function fields(
-        $loop,
-        $variation_data,
-        $variation
-    ): void {
-        woocommerce_wp_text_input([
-            'id' =>
-                "_gift_price_toman[$loop]",
+    public static function fields($loop, $variation_data, $variation): void
+    {
+        if (!$variation instanceof WC_Product_Variation) {
+            return;
+        }
 
-            'label' =>
-                'Gift Price',
+        try {
+            woocommerce_wp_text_input([
+                'id' => "_gift_price_toman[$loop]",
+                'label' => 'Gift Price',
+                'value' => (string) get_post_meta($variation->get_id(), '_gift_price_toman', true),
+                'wrapper_class' => 'form-row form-row-first'
+            ]);
 
-            'value' =>
-                get_post_meta(
-                    $variation->get_id(),
-                    '_gift_price_toman',
-                    true
-                ),
-
-            'wrapper_class' =>
-                'form-row form-row-first'
-        ]);
-
-        woocommerce_wp_text_input([
-            'id' =>
-                "_code_price_toman[$loop]",
-
-            'label' =>
-                'Code Price',
-
-            'value' =>
-                get_post_meta(
-                    $variation->get_id(),
-                    '_code_price_toman',
-                    true
-                ),
-
-            'wrapper_class' =>
-                'form-row form-row-last'
-        ]);
+            woocommerce_wp_text_input([
+                'id' => "_code_price_toman[$loop]",
+                'label' => 'Code Price',
+                'value' => (string) get_post_meta($variation->get_id(), '_code_price_toman', true),
+                'wrapper_class' => 'form-row form-row-last'
+            ]);
+        } catch (Throwable $e) {
+            BTL_Helpers::logger('Admin::fields failed for variation ' . $variation->get_id() . ': ' . $e->getMessage());
+        }
     }
 
-    public static function save(
-        int $variation_id
-    ): void {
-        $product =
-            wc_get_product(
-                $variation_id
-            );
+    public static function save(int $variation_id): void
+    {
+        $product = wc_get_product($variation_id);
 
         if (!$product) {
             return;
         }
 
-        $index =
-            isset(
-                $_POST['variable_post_id']
-            )
-            ? array_search(
-                $variation_id,
-                array_map(
-                    'intval',
-                    $_POST['variable_post_id']
-                ),
-                true
-            )
+        $index = isset($_POST['variable_post_id'])
+            ? array_search($variation_id, array_map('intval', (array) $_POST['variable_post_id']), true)
             : false;
 
         if ($index === false) {
             return;
         }
 
-        $gift =
-            self::sanitize(
-                $_POST['_gift_price_toman'][$index]
-                ?? ''
-            );
+        $gift = self::sanitize($_POST['_gift_price_toman'][$index] ?? '');
+        $code = self::sanitize($_POST['_code_price_toman'][$index] ?? '');
 
-        $code =
-            self::sanitize(
-                $_POST['_code_price_toman'][$index]
-                ?? ''
-            );
-
-        $product->update_meta_data(
-            '_gift_price_toman',
-            $gift
-        );
-
-        $product->update_meta_data(
-            '_code_price_toman',
-            $code
-        );
-
+        $product->update_meta_data('_gift_price_toman', $gift);
+        $product->update_meta_data('_code_price_toman', $code);
         $product->save_meta_data();
     }
 
-    private static function sanitize(
-        $value
-    ): string {
-        $value =
-            trim(
-                str_replace(
-                    [',', '规格', ' ', '，'],
-                    '',
-                    (string)$value
-                )
-            );
+    private static function sanitize($value): string
+    {
+        $value = trim(str_replace([',', '،', ' '], '', (string) $value));
 
-        if (
-            strtolower($value)
-            ===
-            'disabled'
-        ) {
+        if (strtolower($value) === 'disabled') {
             return 'disabled';
         }
 
-        if (
-            !is_numeric($value)
-        ) {
+        if (!is_numeric($value)) {
             return '';
         }
 
-        $value =
-            (float)$value;
+        $value = (float) $value;
 
-        if (
-            $value < 0
-        ) {
+        if ($value < 0) {
             return '';
         }
 
-        if (
-            $value >
-            999999999999
-        ) {
+        if ($value > 999999999999) {
             return '';
         }
 
-        return (string)
-            round($value);
+        return (string) round($value);
     }
 }

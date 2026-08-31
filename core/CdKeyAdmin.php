@@ -13,11 +13,17 @@ final class BTL_CdKey_Admin
     public static function render_stock_box($loop, $variation_data, $variation): void
     {
         if (!current_user_can('manage_woocommerce')) return;
+        if (!$variation instanceof WC_Product_Variation) return;
 
-        $variationId = $variation->get_id();
-        $productId = $variation->get_parent_id();
-        $count = BTL_CdKey_Stock::availableCount($productId, $variationId);
-        $nonce = wp_create_nonce('btl_cdkey_stock_' . $variationId);
+        try {
+            $variationId = $variation->get_id();
+            $productId = $variation->get_parent_id();
+            $count = BTL_CdKey_Stock::availableCount($productId, $variationId);
+            $nonce = wp_create_nonce('btl_cdkey_stock_' . $variationId);
+        } catch (Throwable $e) {
+            BTL_Helpers::logger('CdKeyAdmin::render_stock_box failed: ' . $e->getMessage());
+            return;
+        }
 
         echo '<div class="form-row form-row-full btl-cdkey-stock-box" style="margin-top:10px;padding:10px;border:1px solid #ccd0d4;background:#f8f9fa;" data-variation="' . esc_attr($variationId) . '" data-product="' . esc_attr($productId) . '" data-nonce="' . esc_attr($nonce) . '">';
         echo '<strong>موجودی کد سی‌دی‌کی: <span class="btl-cdkey-count">' . esc_html($count) . '</span> عدد</strong>';
@@ -33,7 +39,7 @@ final class BTL_CdKey_Admin
 
         $variationId = absint($_POST['variation_id'] ?? 0);
         $productId = absint($_POST['product_id'] ?? 0);
-        $raw = (string)($_POST['keys'] ?? '');
+        $raw = (string) ($_POST['keys'] ?? '');
 
         if (!$variationId || !$productId || trim($raw) === '') wp_send_json_error('ورودی نامعتبر', 400);
         if (!wp_verify_nonce($_POST['nonce'] ?? '', 'btl_cdkey_stock_' . $variationId)) wp_send_json_error('نشست نامعتبر', 403);
