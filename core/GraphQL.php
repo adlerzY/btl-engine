@@ -344,17 +344,7 @@ final class BTL_GraphQL
             'resolve' => static function ($product) {
                 $id = $product->databaseId;
                 return BTL_Cache::remember("secondary_gallery_{$id}", static function () use ($id) {
-                    $gallery = [];
-
-                    if (function_exists('get_field')) {
-                        $gallery = get_field('secondary_gallery', $id);
-                    }
-                    if (empty($gallery)) {
-                        $gallery = get_post_meta($id, 'secondary_gallery', true);
-                    }
-                    if (empty($gallery)) {
-                        $gallery = get_post_meta($id, 'secondary-gallery', true);
-                    }
+                    $gallery = BTL_GraphQL::find_secondary_gallery_raw($id);
 
                     if (!is_array($gallery)) {
                         return [];
@@ -366,22 +356,16 @@ final class BTL_GraphQL
                             continue;
                         }
 
-                        $image_url = '';
-                        if (!empty($item['imageUrl'])) {
-                            $image_url = $item['imageUrl'];
-                        } elseif (!empty($item['image'])) {
-                            if (is_numeric($item['image'])) {
-                                $image_url = wp_get_attachment_url((int)$item['image']) ?: '';
-                            } elseif (is_array($item['image']) && isset($item['image']['url'])) {
-                                $image_url = $item['image']['url'];
-                            } elseif (is_string($item['image'])) {
-                                $image_url = $item['image'];
-                            }
+                        $image_url = BTL_GraphQL::extract_gallery_item_image($item);
+                        $description = BTL_GraphQL::extract_gallery_item_description($item);
+
+                        if ($image_url === '' && $description === '') {
+                            continue;
                         }
 
                         $formatted[] = [
-                            'description' => $item['description'] ?? $item['title'] ?? '',
-                            'imageUrl'    => $image_url
+                            'description' => $description,
+                            'imageUrl'    => $image_url,
                         ];
                     }
 
@@ -1093,6 +1077,104 @@ final class BTL_GraphQL
             $url = wp_get_attachment_url($attachment_id);
             return $url ?: '';
         }, 'btl_media', DAY_IN_SECONDS);
+    }
+
+    private static function find_secondary_gallery_raw(int $id)
+    {
+        if (function_exists('get_field')) {
+            $viaAcf = get_field('secondary_gallery', $id);
+            if (!empty($viaAcf)) {
+                return $viaAcf;
+            }
+        }
+
+        $candidateKeys = [
+            'secondary_gallery',
+            'secondary-gallery',
+            'secondary_gallery_items',
+            'secondary_gallery_list',
+            'gallery_secondary',
+            'gallery-secondary',
+            'product_secondary_gallery',
+            'items_gallery',
+            'gallery_items',
+            'gallery_list',
+            'second_gallery',
+            'second-gallery',
+        ];
+
+        foreach ($candidateKeys as $key) {
+            $value = get_post_meta($id, $key, true);
+            $decoded = BTL_GraphQL::decode_repeater_value($value);
+            if (!empty($decoded)) {
+                return $decoded;
+            }
+        }
+
+        return [];
+    }
+
+    private static function decode_repeater_value($value)
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (is_string($value) && $value !== '') {
+            $trimmed = trim($value);
+            if ($trimmed !== '' && ($trimmed[0] === '[' || $trimmed[0] === '{')) {
+                $decoded = json_decode($trimmed, true);
+                if (is_array($decoded)) {
+                    return $decoded;
+                }
+            }
+        }
+
+        return [];
+    }
+
+    private static function extract_gallery_item_image(array $item): string
+    {
+        $imageKeys = ['imageUrl', 'image_url', 'image', 'img', 'photo', 'picture', 'src'];
+
+        foreach ($imageKeys as $key) {
+            if (empty($item[$key])) {
+                continue;
+            }
+
+            $value = $item[$key];
+
+            if (is_numeric($value)) {
+                $url = wp_get_attachment_url((int)$value);
+                if ($url) {
+                    return $url;
+                }
+                continue;
+            }
+
+            if (is_array($value) && isset($value['url'])) {
+                return (string)$value['url'];
+            }
+
+            if (is_string($value)) {
+                return $value;
+            }
+        }
+
+        return '';
+    }
+
+    private static function extract_gallery_item_description(array $item): string
+    {
+        $descriptionKeys = ['description', 'desc', 'text', 'caption', 'content', 'title'];
+
+        foreach ($descriptionKeys as $key) {
+            if (!empty($item[$key]) && is_string($item[$key])) {
+                return $item[$key];
+            }
+        }
+
+        return '';
     }
 
     public static function resolve_category_image($data, array $args): ?string
