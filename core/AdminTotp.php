@@ -1,227 +1,247 @@
 <?php
-
 defined('ABSPATH') || exit;
 
 final class BTL_Admin_Totp
 {
-    private const SECRET_META = 'btl_admin_totp_secret';
-    private const RECOVERY_META = 'btl_admin_totp_recovery';
-    private const TICKET_PREFIX = 'btl_totp_ticket_';
-    private const SETUP_PREFIX = 'btl_totp_setup_';
-    private const TICKET_TTL = 300;
-    private const PERIOD = 30;
-    private const DIGITS = 6;
-    private const WINDOW = 1;
+    private const TICKET_PREFIX   = 'btl_totp_ticket_';
+    private const SETUP_PREFIX    = 'btl_totp_setup_';
+    private const SECRET_META     = 'btl_admin_totp_secret';
+    private const RECOVERY_META   = 'btl_admin_totp_recovery';
+    private const TICKET_TTL      = 600; // 10 minutes
+    private const DIGITS          = 6;
+    private const PERIOD          = 30;
 
     public static function boot(): void
     {
         add_action('graphql_register_types', [self::class, 'register'], 10);
     }
 
-    public static function isConfigured(int $userId): bool
-    {
-        return (bool) get_user_meta($userId, self::SECRET_META, true);
-    }
-
     public static function issuePendingTicket(int $userId): string
     {
-        $ticket = wp_generate_password(40, false);
+        $ticket = bin2hex(random_bytes(32));
         set_transient(self::TICKET_PREFIX . $ticket, $userId, self::TICKET_TTL);
         return $ticket;
     }
 
+    public static function isConfigured(int $userId): bool
+    {
+        $secret = get_user_meta($userId, self::SECRET_META, true);
+        return !empty($secret);
+    }
+
     private static function resolveTicket(string $ticket): int
     {
-        $userId = (int) get_transient(self::TICKET_PREFIX . $ticket);
+        $userId = get_transient(self::TICKET_PREFIX . $ticket);
         if (!$userId) {
-            throw new GraphQL\Error\UserError('نشست تأیید دومرحله‌ای منقضی شده. دوباره وارد شوید.');
+            throw new GraphQL\Error\UserError('نشست ورود منقضی شده است. دوباره تلاش کنید.');
         }
-        return $userId;
+        return (int) $userId;
+    }
+
+    private static function safeExecute(callable $fn)
+    {
+        try {
+            return $fn();
+        } catch (GraphQL\Error\UserError $e) {
+            throw $e;
+        } catch (Throwable $e) {
+            BTL_Helpers::logger(
+                'AdminTotp fatal: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine()
+            );
+            throw new GraphQL\Error\UserError('خطای داخلی سرور رخ داد، لطفاً با پشتیبانی تماس بگیرید.');
+        }
     }
 
     public static function register(): void
     {
         register_graphql_mutation('requestAdminTotpSetup', [
-            'inputFields' => ['pendingTicket' => ['type' => ['non_null' => 'String']]],
+            'inputFields' => [
+                'pendingTicket' => ['type' => ['non_null' => 'String']],
+            ],
             'outputFields' => [
-                'secret' => ['type' => 'String'],
+                'secret'     => ['type' => 'String'],
                 'otpauthUrl' => ['type' => 'String'],
             ],
             'mutateAndGetPayload' => function ($input) {
-                $userId = self::resolveTicket($input['pendingTicket']);
-                if (self::isConfigured($userId)) {
-                    throw new GraphQL\Error\UserError('تأیید دومرحله‌ای قبلاً فعال شده است.');
-                }
-
-                $secret = self::generateSecret();
-                set_transient(self::SETUP_PREFIX . $input['pendingTicket'], $secret, self::TICKET_TTL);
-
-                $user = get_userdata($userId);
-                $label = rawurlencode('Arena2Battle:' . $user->user_login);
-                $otpauthUrl = "otpauth://totp/{$label}?secret={$secret}&issuer=Arena2Battle&digits=" . self::DIGITS . "&period=" . self::PERIOD;
-
-                return ['secret' => $secret, 'otpauthUrl' => $otpauthUrl];
+                return self::safeExecute(function () use ($input) {
+                    $userId = self::resolveTicket($input['pendingTicket']);
+                    if (self::isConfigured($userId)) {
+                        throw new GraphQL\Error\UserError('تأیید دومرحله‌ای قبلاً فعال شده است.');
+                    }
+                    $secret = self::generateSecret();
+                    set_transient(self::SETUP_PREFIX . $input['pendingTicket'], $secret, self::TICKET_TTL);
+                    $user = get_userdata($userId);
+                    $label = rawurlencode('Arena2Battle:' . $user->user_login);
+                    $otpauthUrl = "otpauth://totp/{$label}?secret={$secret}&issuer=Arena2Battle&digits=" . self::DIGITS . "&period=" . self::PERIOD;
+                    return ['secret' => $secret, 'otpauthUrl' => $otpauthUrl];
+                });
             },
         ]);
 
         register_graphql_mutation('confirmAdminTotpSetup', [
             'inputFields' => [
                 'pendingTicket' => ['type' => ['non_null' => 'String']],
-                'code' => ['type' => ['non_null' => 'String']],
+                'code'          => ['type' => ['non_null' => 'String']],
             ],
             'outputFields' => [
-                'authToken' => ['type' => 'String'],
-                'refreshToken' => ['type' => 'String'],
+                'authToken'     => ['type' => 'String'],
+                'refreshToken'  => ['type' => 'String'],
                 'recoveryCodes' => ['type' => ['list_of' => 'String']],
             ],
             'mutateAndGetPayload' => function ($input) {
-                $userId = self::resolveTicket($input['pendingTicket']);
-                $secret = get_transient(self::SETUP_PREFIX . $input['pendingTicket']);
-
-                if (!$secret) {
-                    throw new GraphQL\Error\UserError('نشست تنظیم منقضی شده. دوباره تلاش کنید.');
-                }
-
-                if (!self::verifyCode($secret, sanitize_text_field($input['code']))) {
-                    throw new GraphQL\Error\UserError('کد وارد شده صحیح نیست.');
-                }
-
-                $recoveryCodes = self::generateRecoveryCodes();
-                $hashed = array_map(
-                    static fn($c) => ['hash' => password_hash($c, PASSWORD_BCRYPT), 'used' => false],
-                    $recoveryCodes
-                );
-
-                update_user_meta($userId, self::SECRET_META, BTL_Secure_Vault::encrypt($secret));
-                update_user_meta($userId, self::RECOVERY_META, $hashed);
-
-                delete_transient(self::SETUP_PREFIX . $input['pendingTicket']);
-                delete_transient(self::TICKET_PREFIX . $input['pendingTicket']);
-
-                $tokens = BTL_Phone_Auth::issueTokens(get_userdata($userId));
-
-                return [
-                    'authToken' => $tokens['authToken'],
-                    'refreshToken' => $tokens['refreshToken'],
-                    'recoveryCodes' => $recoveryCodes,
-                ];
+                return self::safeExecute(function () use ($input) {
+                    $userId = self::resolveTicket($input['pendingTicket']);
+                    $secret = get_transient(self::SETUP_PREFIX . $input['pendingTicket']);
+                    if (!$secret) {
+                        throw new GraphQL\Error\UserError('نشست تنظیم منقضی شده. دوباره تلاش کنید.');
+                    }
+                    if (!self::verifyCode($secret, sanitize_text_field($input['code']))) {
+                        throw new GraphQL\Error\UserError('کد وارد شده صحیح نیست.');
+                    }
+                    $recoveryCodes = self::generateRecoveryCodes();
+                    $hashed = array_map(
+                        static fn($c) => ['hash' => password_hash($c, PASSWORD_BCRYPT), 'used' => false],
+                        $recoveryCodes
+                    );
+                    update_user_meta($userId, self::SECRET_META, BTL_Secure_Vault::encrypt($secret));
+                    update_user_meta($userId, self::RECOVERY_META, $hashed);
+                    delete_transient(self::SETUP_PREFIX . $input['pendingTicket']);
+                    delete_transient(self::TICKET_PREFIX . $input['pendingTicket']);
+                    $tokens = BTL_Phone_Auth::issueTokens(get_userdata($userId));
+                    return [
+                        'authToken'    => $tokens['authToken'],
+                        'refreshToken' => $tokens['refreshToken'],
+                        'recoveryCodes' => $recoveryCodes,
+                    ];
+                });
             },
         ]);
 
         register_graphql_mutation('verifyAdminTotp', [
             'inputFields' => [
                 'pendingTicket' => ['type' => ['non_null' => 'String']],
-                'code' => ['type' => ['non_null' => 'String']],
+                'code'          => ['type' => ['non_null' => 'String']],
             ],
             'outputFields' => [
-                'authToken' => ['type' => 'String'],
+                'authToken'    => ['type' => 'String'],
                 'refreshToken' => ['type' => 'String'],
             ],
             'mutateAndGetPayload' => function ($input) {
-                $userId = self::resolveTicket($input['pendingTicket']);
-                $code = sanitize_text_field($input['code']);
-
-                $encryptedSecret = get_user_meta($userId, self::SECRET_META, true);
-                $secret = $encryptedSecret ? BTL_Secure_Vault::decrypt($encryptedSecret) : null;
-
-                $verified = $secret && self::verifyCode($secret, $code);
-                if (!$verified) {
-                    $verified = self::tryRecoveryCode($userId, $code);
-                }
-
-                if (!$verified) {
-                    throw new GraphQL\Error\UserError('کد وارد شده صحیح نیست.');
-                }
-
-                delete_transient(self::TICKET_PREFIX . $input['pendingTicket']);
-
-                $tokens = BTL_Phone_Auth::issueTokens(get_userdata($userId));
-
-                return ['authToken' => $tokens['authToken'], 'refreshToken' => $tokens['refreshToken']];
+                return self::safeExecute(function () use ($input) {
+                    $userId = self::resolveTicket($input['pendingTicket']);
+                    $code = sanitize_text_field($input['code']);
+                    $encryptedSecret = get_user_meta($userId, self::SECRET_META, true);
+                    $secret = $encryptedSecret ? BTL_Secure_Vault::decrypt($encryptedSecret) : null;
+                    $verified = $secret && self::verifyCode($secret, $code);
+                    if (!$verified) {
+                        $verified = self::tryRecoveryCode($userId, $code);
+                    }
+                    if (!$verified) {
+                        throw new GraphQL\Error\UserError('کد وارد شده صحیح نیست.');
+                    }
+                    delete_transient(self::TICKET_PREFIX . $input['pendingTicket']);
+                    $tokens = BTL_Phone_Auth::issueTokens(get_userdata($userId));
+                    return ['authToken' => $tokens['authToken'], 'refreshToken' => $tokens['refreshToken']];
+                });
             },
         ]);
     }
 
-    private static function tryRecoveryCode(int $userId, string $code): bool
+    private static function generateSecret(): string
     {
-        $codes = get_user_meta($userId, self::RECOVERY_META, true);
-        if (!is_array($codes)) return false;
-
-        foreach ($codes as $i => $entry) {
-            if (!$entry['used'] && password_verify($code, $entry['hash'])) {
-                $codes[$i]['used'] = true;
-                update_user_meta($userId, self::RECOVERY_META, $codes);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static function generateRecoveryCodes(int $count = 8): array
-    {
-        $codes = [];
-        for ($i = 0; $i < $count; $i++) {
-            $codes[] = strtoupper(substr(bin2hex(random_bytes(5)), 0, 8));
-        }
-        return $codes;
-    }
-
-    private static function generateSecret(int $length = 32): string
-    {
-        $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+        $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
         $secret = '';
-        for ($i = 0; $i < $length; $i++) {
-            $secret .= $alphabet[random_int(0, 31)];
+        for ($i = 0; $i < 16; $i++) {
+            $secret .= $chars[random_int(0, 31)];
         }
         return $secret;
     }
 
     private static function verifyCode(string $secret, string $code): bool
     {
-        if (!preg_match('/^\d{6}$/', $code)) return false;
+        if (strlen($code) !== self::DIGITS || !ctype_digit($code)) {
+            return false;
+        }
 
         $timeSlice = (int) floor(time() / self::PERIOD);
-        for ($i = -self::WINDOW; $i <= self::WINDOW; $i++) {
-            if (self::generateCode($secret, $timeSlice + $i) === $code) {
+        for ($i = -1; $i <= 1; $i++) {
+            if (hash_equals(self::calculateOtp($secret, $timeSlice + $i), $code)) {
                 return true;
             }
         }
         return false;
     }
 
-    private static function generateCode(string $secret, int $timeSlice): string
+    private static function calculateOtp(string $secret, int $timeSlice): string
     {
-        $key = self::base32Decode($secret);
+        $secretKey = self::base32Decode($secret);
         $time = pack('N*', 0) . pack('N*', $timeSlice);
-        $hash = hash_hmac('sha1', $time, $key, true);
-        $offset = ord(substr($hash, -1)) & 0x0F;
-        $truncated =
-            ((ord($hash[$offset]) & 0x7F) << 24) |
-            ((ord($hash[$offset + 1]) & 0xFF) << 16) |
-            ((ord($hash[$offset + 2]) & 0xFF) << 8) |
-            (ord($hash[$offset + 3]) & 0xFF);
-
-        return str_pad((string) ($truncated % (10 ** self::DIGITS)), self::DIGITS, '0', STR_PAD_LEFT);
+        $hmac = hash_hmac('sha1', $time, $secretKey, true);
+        $offset = ord(substr($hmac, -1)) & 0x0F;
+        $hashpart = substr($hmac, $offset, 4);
+        $value = unpack('N', $hashpart)[1] & 0x7FFFFFFF;
+        $modulo = 10 ** self::DIGITS;
+        return str_pad((string) ($value % $modulo), self::DIGITS, '0', STR_PAD_LEFT);
     }
 
-    private static function base32Decode(string $input): string
+    private static function base32Decode(string $secret): string
     {
-        $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-        $input = strtoupper($input);
-        $buffer = 0;
-        $bitsLeft = 0;
-        $output = '';
+        $base32chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+        $base32charsFlipped = array_flip(str_split($base32chars));
+        $secret = strtoupper($secret);
+        $binaryString = '';
 
-        for ($i = 0; $i < strlen($input); $i++) {
-            $val = strpos($alphabet, $input[$i]);
-            if ($val === false) continue;
-            $buffer = ($buffer << 5) | $val;
-            $bitsLeft += 5;
-            if ($bitsLeft >= 8) {
-                $bitsLeft -= 8;
-                $output .= chr(($buffer >> $bitsLeft) & 0xFF);
+        for ($i = 0; $i < strlen($secret); $i++) {
+            if (!isset($base32charsFlipped[$secret[$i]])) {
+                continue;
+            }
+            $binaryString .= str_pad(decbin($base32charsFlipped[$secret[$i]]), 5, '0', STR_PAD_LEFT);
+        }
+
+        $binaryArgs = str_split($binaryString, 8);
+        $binary = '';
+
+        foreach ($binaryArgs as $arg) {
+            if (strlen($arg) === 8) {
+                $binary .= chr(bindec($arg));
             }
         }
-        return $output;
+
+        return $binary;
+    }
+
+    private static function generateRecoveryCodes(): array
+    {
+        $codes = [];
+        for ($i = 0; $i < 8; $i++) {
+            $codes[] = sprintf('%04d-%04d', random_int(1000, 9999), random_int(1000, 9999));
+        }
+        return $codes;
+    }
+
+    private static function tryRecoveryCode(int $userId, string $code): bool
+    {
+        $recovery = get_user_meta($userId, self::RECOVERY_META, true);
+        if (!is_array($recovery)) {
+            return false;
+        }
+
+        $code = trim($code);
+        $used = false;
+
+        foreach ($recovery as $key => $item) {
+            if (empty($item['used']) && password_verify($code, $item['hash'])) {
+                $recovery[$key]['used'] = true;
+                $used = true;
+                break;
+            }
+        }
+
+        if ($used) {
+            update_user_meta($userId, self::RECOVERY_META, $recovery);
+            return true;
+        }
+
+        return false;
     }
 }
