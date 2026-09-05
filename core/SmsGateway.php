@@ -61,6 +61,6 @@ final class BTL_NirSms_Gateway implements BTL_Sms_Gateway
 
     private function toInternational(string $phone): string
     {
-        return '+98' . substr($phone, 1);
+        return '98' . substr($phone, 1);
     }
 }

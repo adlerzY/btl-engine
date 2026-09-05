@@ -131,10 +131,20 @@ final class BTL_Phone_Auth
             throw new GraphQL\Error\UserError('سرویس صدور توکن پیکربندی نشده است.');
         }
 
-        return [
-            'authToken' => \WPGraphQL\JWT_Authentication\Auth::get_token($user),
-            'refreshToken' => \WPGraphQL\JWT_Authentication\Auth::get_refresh_token($user),
-        ];
+        if (!defined('GRAPHQL_JWT_AUTH_SECRET_KEY') || GRAPHQL_JWT_AUTH_SECRET_KEY === '') {
+            BTL_Helpers::logger('issueTokens: GRAPHQL_JWT_AUTH_SECRET_KEY در wp-config.php تعریف نشده.');
+            throw new GraphQL\Error\UserError('سرویس صدور توکن پیکربندی نشده است.');
+        }
+
+        try {
+            return [
+                'authToken' => \WPGraphQL\JWT_Authentication\Auth::get_token($user),
+                'refreshToken' => \WPGraphQL\JWT_Authentication\Auth::get_refresh_token($user),
+            ];
+        } catch (Throwable $e) {
+            BTL_Helpers::logger('issueTokens fatal: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
+            throw new GraphQL\Error\UserError('صدور توکن ورود با خطا مواجه شد. لطفاً با پشتیبانی تماس بگیرید.');
+        }
     }
 
     private static function createUser(string $phone, array $input): int
