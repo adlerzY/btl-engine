@@ -177,3 +177,30 @@ final class BTL_Sessions
         ), ARRAY_A);
     }
 }
+    public static function revoke(int $userId, string $sessionId): void
+    {
+        global $wpdb;
+        $wpdb->update(self::table(), ['revoked' => 1], [
+            'user_id' => $userId, 'session_id' => $sessionId,
+        ]);
+    }
+
+    public static function revokeAll(int $userId): void
+    {
+        global $wpdb;
+        $wpdb->update(self::table(), ['revoked' => 1], ['user_id' => $userId]);
+    }
+
+    public static function revokeAllExcept(int $userId, ?string $exceptSessionId): void
+    {
+        if (!$exceptSessionId) {
+            self::revokeAll($userId);
+            return;
+        }
+
+        global $wpdb;
+        $wpdb->query($wpdb->prepare(
+            "UPDATE " . self::table() . " SET revoked=1 WHERE user_id=%d AND session_id != %s",
+            $userId, $exceptSessionId
+        ));
+    }

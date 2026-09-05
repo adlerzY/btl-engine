@@ -5,11 +5,13 @@ final class BTL_Admin_Totp
 {
     private const TICKET_PREFIX   = 'btl_totp_ticket_';
     private const SETUP_PREFIX    = 'btl_totp_setup_';
+    private const ATTEMPTS_PREFIX = 'btl_totp_attempts_';
     private const SECRET_META     = 'btl_admin_totp_secret';
     private const RECOVERY_META   = 'btl_admin_totp_recovery';
-    private const TICKET_TTL      = 600; // 10 minutes
+    private const TICKET_TTL      = 600;
     private const DIGITS          = 6;
     private const PERIOD          = 30;
+    private const MAX_VERIFY_ATTEMPTS = 5;
 
     public static function boot(): void
     {
@@ -36,6 +38,28 @@ final class BTL_Admin_Totp
             throw new GraphQL\Error\UserError('نشست ورود منقضی شده است. دوباره تلاش کنید.');
         }
         return (int) $userId;
+    }
+
+    private static function assertTicketNotLocked(string $ticket): void
+    {
+        $attempts = (int) get_transient(self::ATTEMPTS_PREFIX . $ticket);
+        if ($attempts >= self::MAX_VERIFY_ATTEMPTS) {
+            delete_transient(self::TICKET_PREFIX . $ticket);
+            delete_transient(self::SETUP_PREFIX . $ticket);
+            delete_transient(self::ATTEMPTS_PREFIX . $ticket);
+            throw new GraphQL\Error\UserError('تعداد تلاش‌های نادرست بیش از حد مجاز است. دوباره وارد شوید.');
+        }
+    }
+
+    private static function registerFailedAttempt(string $ticket): void
+    {
+        $attempts = (int) get_transient(self::ATTEMPTS_PREFIX . $ticket);
+        set_transient(self::ATTEMPTS_PREFIX . $ticket, $attempts + 1, self::TICKET_TTL);
+    }
+
+    private static function clearAttempts(string $ticket): void
+    {
+        delete_transient(self::ATTEMPTS_PREFIX . $ticket);
     }
 
     private static function safeExecute(callable $fn)
@@ -91,11 +115,13 @@ final class BTL_Admin_Totp
             'mutateAndGetPayload' => function ($input) {
                 return self::safeExecute(function () use ($input) {
                     $userId = self::resolveTicket($input['pendingTicket']);
+                    self::assertTicketNotLocked($input['pendingTicket']);
                     $secret = get_transient(self::SETUP_PREFIX . $input['pendingTicket']);
                     if (!$secret) {
                         throw new GraphQL\Error\UserError('نشست تنظیم منقضی شده. دوباره تلاش کنید.');
                     }
                     if (!self::verifyCode($secret, sanitize_text_field($input['code']))) {
+                        self::registerFailedAttempt($input['pendingTicket']);
                         throw new GraphQL\Error\UserError('کد وارد شده صحیح نیست.');
                     }
                     $recoveryCodes = self::generateRecoveryCodes();
@@ -107,6 +133,7 @@ final class BTL_Admin_Totp
                     update_user_meta($userId, self::RECOVERY_META, $hashed);
                     delete_transient(self::SETUP_PREFIX . $input['pendingTicket']);
                     delete_transient(self::TICKET_PREFIX . $input['pendingTicket']);
+                    self::clearAttempts($input['pendingTicket']);
                     $tokens = BTL_Phone_Auth::issueTokens(get_userdata($userId));
                     return [
                         'authToken'    => $tokens['authToken'],
@@ -129,6 +156,7 @@ final class BTL_Admin_Totp
             'mutateAndGetPayload' => function ($input) {
                 return self::safeExecute(function () use ($input) {
                     $userId = self::resolveTicket($input['pendingTicket']);
+                    self::assertTicketNotLocked($input['pendingTicket']);
                     $code = sanitize_text_field($input['code']);
                     $encryptedSecret = get_user_meta($userId, self::SECRET_META, true);
                     $secret = $encryptedSecret ? BTL_Secure_Vault::decrypt($encryptedSecret) : null;
@@ -137,9 +165,11 @@ final class BTL_Admin_Totp
                         $verified = self::tryRecoveryCode($userId, $code);
                     }
                     if (!$verified) {
+                        self::registerFailedAttempt($input['pendingTicket']);
                         throw new GraphQL\Error\UserError('کد وارد شده صحیح نیست.');
                     }
                     delete_transient(self::TICKET_PREFIX . $input['pendingTicket']);
+                    self::clearAttempts($input['pendingTicket']);
                     $tokens = BTL_Phone_Auth::issueTokens(get_userdata($userId));
                     return ['authToken' => $tokens['authToken'], 'refreshToken' => $tokens['refreshToken']];
                 });

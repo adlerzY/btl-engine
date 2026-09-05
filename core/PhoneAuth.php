@@ -123,67 +123,6 @@ final class BTL_Phone_Auth
                 ];
             },
         ]);
-
-        register_graphql_mutation('loginWithPhonePassword', [
-            'inputFields' => [
-                'phone' => ['type' => ['non_null' => 'String']],
-                'password' => ['type' => ['non_null' => 'String']],
-            ],
-            'outputFields' => [
-                'authToken' => ['type' => 'String'],
-                'refreshToken' => ['type' => 'String'],
-                'requiresAdminTotp' => ['type' => 'Boolean'],
-                'requiresAdminTotpSetup' => ['type' => 'Boolean'],
-                'pendingTicket' => ['type' => 'String'],
-            ],
-            'mutateAndGetPayload' => function ($input) {
-                $phone = self::normalizePhone($input['phone']);
-                if (!$phone) {
-                    throw new GraphQL\Error\UserError('شماره موبایل نامعتبر است.');
-                }
-
-                $ip = BTL_Helpers::clientIp();
-                BTL_Login_Throttle::assertAllowed($phone, $ip);
-
-                $userId = self::findUserByPhone($phone);
-                $user = $userId ? get_userdata($userId) : null;
-
-                if (!$user || !wp_check_password($input['password'], $user->user_pass, $userId)) {
-                    BTL_Login_Throttle::recordAttempt($phone, $ip);
-                    throw new GraphQL\Error\UserError('شماره موبایل یا رمز عبور اشتباه است.');
-                }
-
-                BTL_Login_Throttle::clearAttempts($phone);
-
-                if (user_can($userId, 'manage_woocommerce')) {
-                    $ticket = BTL_Admin_Totp::issuePendingTicket($userId);
-
-                    if (!BTL_Admin_Totp::isConfigured($userId)) {
-                        return [
-                            'authToken' => null, 'refreshToken' => null,
-                            'requiresAdminTotp' => false, 'requiresAdminTotpSetup' => true,
-                            'pendingTicket' => $ticket,
-                        ];
-                    }
-
-                    return [
-                        'authToken' => null, 'refreshToken' => null,
-                        'requiresAdminTotp' => true, 'requiresAdminTotpSetup' => false,
-                        'pendingTicket' => $ticket,
-                    ];
-                }
-
-                $tokens = self::issueTokens($user);
-
-                return [
-                    'authToken' => $tokens['authToken'],
-                    'refreshToken' => $tokens['refreshToken'],
-                    'requiresAdminTotp' => false,
-                    'requiresAdminTotpSetup' => false,
-                    'pendingTicket' => null,
-                ];
-            },
-        ]);
     }
 
     public static function issueTokens(WP_User $user): array
@@ -238,7 +177,7 @@ final class BTL_Phone_Auth
         return $userId;
     }
 
-    private static function findUserByPhone(string $phone): ?int
+    public static function findUserByPhone(string $phone): ?int
     {
         $users = get_users([
             'meta_key' => self::PHONE_META,
@@ -250,7 +189,7 @@ final class BTL_Phone_Auth
         return isset($users[0]) ? (int) $users[0] : null;
     }
 
-    private static function normalizePhone(string $raw): ?string
+    public static function normalizePhone(string $raw): ?string
     {
         $digits = preg_replace('/\D/', '', $raw) ?? '';
 
