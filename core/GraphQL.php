@@ -1490,15 +1490,26 @@ final class BTL_GraphQL
                 return [];
             }
 
-            $cards = [];
+            $loadedVariations = wc_get_products([
+                'include' => array_map('absint', $children),
+                'limit' => -1,
+                'return' => 'objects',
+            ]);
+            if (!is_array($loadedVariations) || !$loadedVariations) {
+                return [];
+            }
 
-            foreach ($children as $variation_id) {
-                $variation = wc_get_product($variation_id);
-
-                if (!$variation) {
-                    continue;
+            $byId = [];
+            foreach ($loadedVariations as $variation) {
+                if ($variation instanceof WC_Product_Variation) {
+                    $byId[(int) $variation->get_id()] = $variation;
                 }
+            }
 
+            $cards = [];
+            foreach ($children as $variation_id) {
+                $variation = $byId[(int) $variation_id] ?? null;
+                if (!$variation) continue;
                 $cards[] = BTL_GraphQL::build_card($variation, $product);
             }
 
