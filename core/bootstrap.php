@@ -7,7 +7,22 @@ defined('ABSPATH') || exit;
  */
 function btl_is_admin_graphql_request(): bool
 {
-    return isset($_SERVER['HTTP_X_BTL_ADMIN_REQUEST']) && $_SERVER['HTTP_X_BTL_ADMIN_REQUEST'] === '1';
+    if (!isset($_SERVER['HTTP_X_BTL_ADMIN_REQUEST']) || $_SERVER['HTTP_X_BTL_ADMIN_REQUEST'] !== '1') {
+        return false;
+    }
+
+    $expected = defined('BTL_ADMIN_GRAPHQL_SHARED_SECRET')
+        ? trim((string)BTL_ADMIN_GRAPHQL_SHARED_SECRET)
+        : '';
+    $provided = isset($_SERVER['HTTP_X_BTL_ADMIN_SECRET'])
+        ? trim((string)wp_unslash($_SERVER['HTTP_X_BTL_ADMIN_SECRET']))
+        : '';
+
+    if ($expected === '' || $provided === '') {
+        return false;
+    }
+
+    return hash_equals($expected, $provided);
 }
 
 function btl_autoload_core_class(string $class): void

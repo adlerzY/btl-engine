@@ -370,7 +370,7 @@ final class BTL_Admin_Tickets
             'linkedOrderId' => (int)get_post_meta($ticketId, 'linked_order_id', true) ?: null,
             'assigneeId' => $assigneeId ?: null,
             'assigneeName' => $assignee ? $assignee->display_name : null,
-            'claimExpiresAt' => $claim ? gmdate(DATE_ATOM, strtotime($claim->expires_at)) : null,
+            'claimExpiresAt' => $claimExpiresAt ? gmdate(DATE_ATOM, strtotime($claimExpiresAt)) : null,
         ];
     }
 

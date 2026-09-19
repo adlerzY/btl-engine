@@ -1378,8 +1378,22 @@ final class BTL_GraphQL
                     }
                 };
 
+                $variationObjects = [];
+                if (function_exists('wc_get_products')) {
+                    $loadedVariations = wc_get_products([
+                        'include' => $children,
+                        'limit' => -1,
+                        'return' => 'objects',
+                    ]);
+                    foreach ($loadedVariations as $loadedVariation) {
+                        if ($loadedVariation instanceof WC_Product) {
+                            $variationObjects[(int)$loadedVariation->get_id()] = $loadedVariation;
+                        }
+                    }
+                }
+
                 foreach ($children as $variationId) {
-                    $variation = wc_get_product($variationId);
+                    $variation = $variationObjects[$variationId] ?? null;
                     if (!$variation) continue;
 
                     $manualGift = $variation->get_meta('_gift_price_toman');
