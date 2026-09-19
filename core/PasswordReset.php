@@ -77,8 +77,8 @@ final class BTL_Password_Reset
                     throw new GraphQL\Error\UserError('شماره موبایل یا ایمیل نامعتبر است.');
                 }
 
-                $otpRowId = BTL_Otp::validate($identifierKey, self::PURPOSE, sanitize_text_field($input['code']));
-
+                $otpRowId = BTL_Otp::beginVerification($identifierKey, self::PURPOSE, sanitize_text_field($input['code']));
+                try {
                 $user = BTL_Credentials_Auth::findUserByIdentifier($raw);
                 if (!$user) {
                     throw new GraphQL\Error\UserError('کاربری با این مشخصات یافت نشد.');
@@ -89,7 +89,7 @@ final class BTL_Password_Reset
                 wp_set_password((string) $input['newPassword'], $user->ID);
                 update_user_meta($user->ID, 'btl_has_manual_password', 1);
 
-                BTL_Otp::consume($otpRowId);
+                BTL_Otp::finishVerification($otpRowId);
                 BTL_Sessions::revokeAll($user->ID);
 
                 $isStaff = user_can($user->ID, 'manage_woocommerce');
@@ -115,6 +115,10 @@ final class BTL_Password_Reset
                     'refreshToken' => $tokens['refreshToken'],
                     'requiresLogin' => false,
                 ];
+                } catch (Throwable $e) {
+                    BTL_Otp::rollbackVerification();
+                    throw $e;
+                }
             },
         ]);
     }

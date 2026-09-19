@@ -102,6 +102,10 @@ function btl_autoload_core_class(string $class): void
 
 spl_autoload_register('btl_autoload_core_class');
 
+BTL_Migrations::boot();
+BTL_Otp::boot();
+BTL_Login_Throttle::boot();
+
 /**
  * Request-local WooCommerce order-item lookup cache.
  * Avoids loading the same order item repeatedly from separate GraphQL

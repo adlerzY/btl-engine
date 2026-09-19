@@ -6,6 +6,15 @@ final class BTL_GraphQL
 {
     private static array $pendingRegionAliases = [];
 
+    private static function assertTicketViewer(int $ticketId): void
+    {
+        $ownerId = (int) get_post_meta($ticketId, 'customer_id', true);
+        $currentUserId = get_current_user_id();
+        if ($ownerId < 1 || ($ownerId !== $currentUserId && !current_user_can('manage_woocommerce'))) {
+            throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
+        }
+    }
+
     public static function boot(): void
     {
         add_filter('register_post_type_args', [self::class, 'expose_support_ticket_type'], 10, 2);
@@ -418,7 +427,7 @@ final class BTL_GraphQL
 
         register_graphql_object_type('OptimizedVariationItem', [
             'fields' => [
-                'databaseId'            => ['type' => 'Integer'],
+                'databaseId'            => ['type' => 'Int'],
                 'name'                  => ['type' => 'String'],
                 'slug'                  => ['type' => 'String'],
                 'price'                 => ['type' => 'String'],
@@ -767,7 +776,7 @@ final class BTL_GraphQL
     private static function register_variation_fields(): void
     {
         register_graphql_field('ProductCategory', 'variationCount', [
-            'type' => 'Integer',
+            'type' => 'Int',
             'resolve' => static function ($term) {
                 $id = $term->term_id ?? $term->databaseId ?? null;
 
@@ -1089,6 +1098,7 @@ final class BTL_GraphQL
         register_graphql_field('SupportTicket', 'linkedOrderId', [
             'type' => 'Int',
             'resolve' => static function ($ticket) {
+                self::assertTicketViewer((int) $ticket->databaseId);
                 $value = get_post_meta($ticket->databaseId, 'linked_order_id', true);
 
                 return $value !== '' ? (int)$value : null;
@@ -1098,6 +1108,7 @@ final class BTL_GraphQL
         register_graphql_field('SupportTicket', 'customerName', [
             'type' => 'String',
             'resolve' => static function ($ticket) {
+                self::assertTicketViewer((int) $ticket->databaseId);
                 $customerId = (int)get_post_meta($ticket->databaseId, 'customer_id', true);
 
                 if (!$customerId) {
@@ -1113,6 +1124,7 @@ final class BTL_GraphQL
         register_graphql_field('SupportTicket', 'ticketStatus', [
             'type' => 'String',
             'resolve' => static function ($ticket) {
+                self::assertTicketViewer((int) $ticket->databaseId);
                 return get_post_meta($ticket->databaseId, 'ticket_status', true) ?: 'open';
             },
         ]);
@@ -1120,6 +1132,7 @@ final class BTL_GraphQL
         register_graphql_field('SupportTicket', 'customerId', [
             'type' => 'Int',
             'resolve' => static function ($ticket) {
+                self::assertTicketViewer((int) $ticket->databaseId);
                 $value = get_post_meta($ticket->databaseId, 'customer_id', true);
 
                 return $value !== '' ? (int)$value : null;
@@ -1129,13 +1142,7 @@ final class BTL_GraphQL
         register_graphql_field('SupportTicket', 'replies', [
             'type' => ['list_of' => 'SupportTicketReply'],
             'resolve' => static function ($ticket) {
-                $ownerId = (int)get_post_meta($ticket->databaseId, 'customer_id', true);
-                $currentUserId = get_current_user_id();
-
-                if ($ownerId !== $currentUserId && !current_user_can('manage_woocommerce')) {
-                    return [];
-                }
-
+                self::assertTicketViewer((int) $ticket->databaseId);
                 return BTL_Ticket_Replies::forTicket($ticket->databaseId);
             },
         ]);

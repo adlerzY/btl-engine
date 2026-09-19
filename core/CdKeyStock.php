@@ -46,7 +46,8 @@ final class BTL_CdKey_Stock
             UNIQUE KEY unique_plaintext (key_fingerprint),
             KEY product_variation_status (product_id, variation_id, status),
             KEY order_item_status (order_id, item_id, status),
-            KEY reservation_status (reservation_token, status)
+            KEY reservation_status (reservation_token, status),
+            KEY status_reserved_at (status, reserved_at)
         ) " . $wpdb->get_charset_collate() . ' ENGINE=InnoDB;';
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         dbDelta($sql);

@@ -599,7 +599,11 @@ final class BTL_Price_Engine
             return null;
         }
 
-        return self::money($value);
+        $normalized = trim((string) $value);
+        if ($normalized === '' || !preg_match('/^\d+(?:\.\d+)?$/', $normalized)) {
+            return null;
+        }
+        return (float) $normalized;
     }
 
     public static function rates(): array

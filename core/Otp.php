@@ -16,6 +16,27 @@ final class BTL_Otp
 
     public static function table(): string { global $wpdb; return $wpdb->prefix . 'btl_otp_codes'; }
 
+    private static function lockName(string $scope): string
+    {
+        return 'btl_otp_' . md5($scope);
+    }
+
+    private static function acquireLock(string $scope): void
+    {
+        global $wpdb;
+        $name = self::lockName($scope);
+        $locked = (int) $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 5)', $name));
+        if ($locked !== 1) {
+            throw new GraphQL\Error\UserError('سامانه احراز هویت مشغول است. کمی بعد تلاش کنید.');
+        }
+    }
+
+    private static function releaseLock(string $scope): void
+    {
+        global $wpdb;
+        $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', self::lockName($scope)));
+    }
+
     public static function boot(): void
     {
         add_action('btl_otp_cleanup', [self::class, 'cleanupExpired']);
@@ -75,52 +96,66 @@ final class BTL_Otp
     {
         global $wpdb;
         $table = self::table();
+        $lockScope = $identifier . '|' . $purpose;
+        self::acquireLock($lockScope);
+        $lockHeld = true;
 
-        if ($ip !== '') {
-            $ipCount = (int) $wpdb->get_var($wpdb->prepare(
-                "SELECT COUNT(*) FROM {$table} WHERE ip_address=%s AND created_at > (UTC_TIMESTAMP() - INTERVAL %d SECOND)",
-                $ip, self::IP_WINDOW_SECONDS
+        try {
+            if ($ip !== '') {
+                $ipCount = (int) $wpdb->get_var($wpdb->prepare(
+                    "SELECT COUNT(*) FROM {$table} WHERE ip_address=%s AND created_at > (UTC_TIMESTAMP() - INTERVAL %d SECOND)",
+                    $ip, self::IP_WINDOW_SECONDS
+                ));
+                if ($ipCount >= self::MAX_PER_IP) {
+                    throw new GraphQL\Error\UserError('تعداد درخواست از این آی‌پی بیش از حد مجاز است. کمی بعد تلاش کنید.');
+                }
+            }
+
+            $recent = $wpdb->get_row($wpdb->prepare(
+                "SELECT created_at FROM {$table} WHERE identifier=%s AND purpose=%s ORDER BY id DESC LIMIT 1",
+                $identifier, $purpose
             ));
-            if ($ipCount >= self::MAX_PER_IP) {
-                throw new GraphQL\Error\UserError('تعداد درخواست از این آی‌پی بیش از حد مجاز است. کمی بعد تلاش کنید.');
+
+            if ($recent) {
+                $secondsSince = time() - strtotime($recent->created_at . ' UTC');
+                if ($secondsSince < self::RESEND_COOLDOWN_SECONDS) {
+                    $wait = self::RESEND_COOLDOWN_SECONDS - $secondsSince;
+                    throw new GraphQL\Error\UserError("لطفاً {$wait} ثانیه دیگر دوباره تلاش کنید.");
+                }
             }
-        }
 
-        $recent = $wpdb->get_row($wpdb->prepare(
-            "SELECT created_at FROM {$table} WHERE identifier=%s AND purpose=%s ORDER BY id DESC LIMIT 1",
-            $identifier, $purpose
-        ));
-
-        if ($recent) {
-            $secondsSince = time() - strtotime($recent->created_at . ' UTC');
-            if ($secondsSince < self::RESEND_COOLDOWN_SECONDS) {
-                $wait = self::RESEND_COOLDOWN_SECONDS - $secondsSince;
-                throw new GraphQL\Error\UserError("لطفاً {$wait} ثانیه دیگر دوباره تلاش کنید.");
+            $windowCount = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM {$table} WHERE identifier=%s AND purpose=%s AND created_at > (UTC_TIMESTAMP() - INTERVAL %d SECOND)",
+                $identifier, $purpose, self::IDENTIFIER_WINDOW_SECONDS
+            ));
+            if ($windowCount >= self::MAX_PER_IDENTIFIER) {
+                throw new GraphQL\Error\UserError('تعداد درخواست کد بیش از حد مجاز است. چند دقیقه دیگر تلاش کنید.');
             }
-        }
 
-        $windowCount = (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM {$table} WHERE identifier=%s AND purpose=%s AND created_at > (UTC_TIMESTAMP() - INTERVAL %d SECOND)",
-            $identifier, $purpose, self::IDENTIFIER_WINDOW_SECONDS
-        ));
-        if ($windowCount >= self::MAX_PER_IDENTIFIER) {
-            throw new GraphQL\Error\UserError('تعداد درخواست کد بیش از حد مجاز است. چند دقیقه دیگر تلاش کنید.');
-        }
+            $code = (string) random_int(10 ** (self::CODE_LENGTH - 1), (10 ** self::CODE_LENGTH) - 1);
 
-        $code = (string) random_int(10 ** (self::CODE_LENGTH - 1), (10 ** self::CODE_LENGTH) - 1);
+            if (!$wpdb->insert($table, [
+                'identifier' => $identifier,
+                'channel' => $channel,
+                'purpose' => $purpose,
+                'code_hash' => password_hash($code, PASSWORD_BCRYPT),
+                'ip_address' => $ip ?: null,
+                'expires_at' => gmdate('Y-m-d H:i:s', time() + self::EXPIRES_SECONDS),
+                'created_at' => current_time('mysql', true),
+            ])) {
+                throw new GraphQL\Error\UserError('ثبت درخواست کد با خطا مواجه شد. دوباره تلاش کنید.');
+            }
 
-        $wpdb->insert($table, [
-            'identifier' => $identifier,
-            'channel' => $channel,
-            'purpose' => $purpose,
-            'code_hash' => password_hash($code, PASSWORD_BCRYPT),
-            'ip_address' => $ip ?: null,
-            'expires_at' => gmdate('Y-m-d H:i:s', time() + self::EXPIRES_SECONDS),
-            'created_at' => current_time('mysql', true),
-        ]);
+            self::releaseLock($lockScope);
+            $lockHeld = false;
 
-        if (!$sendFn($code)) {
-            throw new GraphQL\Error\UserError('ارسال کد با خطا مواجه شد. دوباره تلاش کنید.');
+            if (!$sendFn($code)) {
+                throw new GraphQL\Error\UserError('ارسال کد با خطا مواجه شد. دوباره تلاش کنید.');
+            }
+        } finally {
+            if ($lockHeld) {
+                self::releaseLock($lockScope);
+            }
         }
     }
     public static function validate(string $identifier, string $purpose, string $code): int
@@ -149,10 +184,67 @@ final class BTL_Otp
         return (int) $row->id;
     }
 
+    public static function beginVerification(string $identifier, string $purpose, string $code): int
+    {
+        global $wpdb;
+        $table = self::table();
+        if ($wpdb->query('START TRANSACTION') === false) {
+            throw new GraphQL\Error\UserError('خطا در اعتبارسنجی کد. دوباره تلاش کنید.');
+        }
+
+        $row = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$table} WHERE identifier=%s AND purpose=%s AND consumed_at IS NULL AND expires_at > UTC_TIMESTAMP() ORDER BY id DESC LIMIT 1 FOR UPDATE",
+            $identifier, $purpose
+        ));
+
+        if (!$row) {
+            $wpdb->query('ROLLBACK');
+            throw new GraphQL\Error\UserError('کد نامعتبر یا منقضی شده. دوباره درخواست دهید.');
+        }
+        if ((int) $row->attempts >= self::MAX_ATTEMPTS) {
+            $wpdb->query('ROLLBACK');
+            throw new GraphQL\Error\UserError('تعداد تلاش‌های نادرست بیش از حد مجاز است. کد جدید درخواست دهید.');
+        }
+        if (!password_verify($code, $row->code_hash)) {
+            $wpdb->update($table, ['attempts' => (int) $row->attempts + 1], ['id' => $row->id]);
+            $wpdb->query('COMMIT');
+            throw new GraphQL\Error\UserError('کد وارد شده صحیح نیست.');
+        }
+        return (int) $row->id;
+    }
+
+    public static function finishVerification(int $rowId): void
+    {
+        global $wpdb;
+        $updated = $wpdb->query($wpdb->prepare(
+            "UPDATE " . self::table() . " SET consumed_at=%s WHERE id=%d AND consumed_at IS NULL",
+            current_time('mysql', true),
+            $rowId
+        ));
+        if ((int) $updated !== 1) {
+            $wpdb->query('ROLLBACK');
+            throw new GraphQL\Error\UserError('کد قبلاً استفاده شده یا دیگر معتبر نیست.');
+        }
+        $wpdb->query('COMMIT');
+    }
+
+    public static function rollbackVerification(): void
+    {
+        global $wpdb;
+        $wpdb->query('ROLLBACK');
+    }
+
     public static function consume(int $rowId): void
     {
         global $wpdb;
-        $wpdb->update(self::table(), ['consumed_at' => current_time('mysql', true)], ['id' => $rowId]);
+        $updated = $wpdb->query($wpdb->prepare(
+            "UPDATE " . self::table() . " SET consumed_at=%s WHERE id=%d AND consumed_at IS NULL",
+            current_time('mysql', true),
+            $rowId
+        ));
+        if ((int) $updated !== 1) {
+            throw new GraphQL\Error\UserError('کد قبلاً استفاده شده یا دیگر معتبر نیست.');
+        }
     }
 
     public static function verify(string $identifier, string $purpose, string $code): void

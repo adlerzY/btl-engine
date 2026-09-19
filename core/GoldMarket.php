@@ -249,8 +249,23 @@ final class BTL_Gold_Market
         $deal = self::getDeal($dealId);
         if (!$deal) throw new GraphQL\Error\UserError('معامله پیدا نشد.');
         if ($status === 'completed') throw new GraphQL\Error\UserError('برای تکمیل معامله از Confirm Received استفاده کنید.');
-        $updated = $wpdb->update(self::dealTable(), ['status' => $status, 'suspended_reason' => $reason !== null ? sanitize_textarea_field($reason) : null, 'updated_at' => current_time('mysql', true)], ['id' => $dealId], ['%s','%s','%s'], ['%d']);
-        if ($updated === false) throw new GraphQL\Error\UserError('تغییر وضعیت معامله انجام نشد.');
+        $transitions = [
+            'timer' => ['active', 'suspended', 'cancelled'],
+            'active' => ['suspended', 'cancelled'],
+            'suspended' => ['active', 'cancelled'],
+        ];
+        if (!in_array($status, $transitions[$deal['status']] ?? [], true)) {
+            throw new GraphQL\Error\UserError('تغییر وضعیت فعلی معامله مجاز نیست.');
+        }
+        $updated = $wpdb->query($wpdb->prepare(
+            "UPDATE " . self::dealTable() . " SET status=%s, suspended_reason=%s, updated_at=%s WHERE id=%d AND status=%s",
+            $status,
+            $reason !== null ? sanitize_textarea_field($reason) : null,
+            current_time('mysql', true),
+            $dealId,
+            $deal['status']
+        ));
+        if ((int)$updated !== 1) throw new GraphQL\Error\UserError('تغییر وضعیت معامله انجام نشد یا وضعیت معامله عوض شده است.');
         BTL_Admin_Audit::record(get_current_user_id(), 'GOLD_STATUS_CHANGE', 'gold_deal', $dealId, 'success', ['to' => $status, 'reason' => $reason]);
         return self::getDeal($dealId) ?: [];
     }
@@ -265,6 +280,7 @@ final class BTL_Gold_Market
         $amount = $amount > 0 ? $amount : (int)$proposal['amount'];
         $amount = min($amount, (int)$proposal['amount']);
         $now = current_time('mysql', true);
+        $wpdb->query('START TRANSACTION');
         $updated = $wpdb->query($wpdb->prepare(
             "UPDATE " . self::dealTable() . " SET status='completed', delivered_amount=%d, delivery_confirmed_at=%s, updated_at=%s WHERE id=%d AND status IN ('timer','active','suspended')",
             $amount,
@@ -272,8 +288,21 @@ final class BTL_Gold_Market
             $now,
             $dealId
         ));
-        if ((int)$updated !== 1) throw new GraphQL\Error\UserError('تأیید تحویل انجام نشد یا معامله قبلاً تکمیل شده است.');
-        $wpdb->update(self::proposalTable(), ['status' => 'completed', 'completed_at' => $now, 'updated_at' => $now], ['id' => (int)$deal['proposalId']], ['%s','%s','%s'], ['%d']);
+        if ((int)$updated !== 1) {
+            $wpdb->query('ROLLBACK');
+            throw new GraphQL\Error\UserError('تأیید تحویل انجام نشد یا معامله قبلاً تکمیل شده است.');
+        }
+        $proposalUpdated = $wpdb->query($wpdb->prepare(
+            "UPDATE " . self::proposalTable() . " SET status='completed', completed_at=%s, updated_at=%s WHERE id=%d AND status IN ('claimed','timer')",
+            $now,
+            $now,
+            (int)$deal['proposalId']
+        ));
+        if ((int)$proposalUpdated !== 1) {
+            $wpdb->query('ROLLBACK');
+            throw new GraphQL\Error\UserError('وضعیت پیشنهاد مرتبط برای تأیید تحویل معتبر نیست.');
+        }
+        $wpdb->query('COMMIT');
         self::maybeCompleteBuyOrder((int)$deal['buyOrderId']);
         BTL_Notifications::push((int)$proposal['userId'], 'تحویل Gold تأیید شد', 'تحویل Gold شما تأیید شد و معامله وارد مرحله پرداخت شد.', '/my-account', 'gold');
         BTL_Admin_Audit::record(get_current_user_id(), 'GOLD_CONFIRM_RECEIVED', 'gold_deal', $dealId, 'success', ['delivered_amount' => $amount]);
@@ -292,6 +321,7 @@ final class BTL_Gold_Market
         $amountDecimal = self::normalizeDecimal($amount);
         if ($amountDecimal <= 0) throw new GraphQL\Error\UserError('مبلغ پرداخت نامعتبر است.');
         $now = current_time('mysql', true);
+        $wpdb->query('START TRANSACTION');
         $ok = $wpdb->insert(self::payoutTable(), [
             'deal_id' => $dealId,
             'proposal_id' => (int)$proposal['databaseId'],
@@ -303,8 +333,21 @@ final class BTL_Gold_Market
             'paid_at' => $now,
             'created_at' => $now,
         ], ['%d','%d','%d','%f','%s','%d','%s','%s','%s']);
-        if (!$ok) throw new GraphQL\Error\UserError('ثبت پرداخت انجام نشد.');
-        $wpdb->update(self::proposalTable(), ['status' => 'paid', 'paid_at' => $now, 'updated_at' => $now], ['id' => (int)$proposal['databaseId']], ['%s','%s','%s'], ['%d']);
+        if (!$ok) {
+            $wpdb->query('ROLLBACK');
+            throw new GraphQL\Error\UserError('ثبت پرداخت انجام نشد.');
+        }
+        $proposalUpdated = $wpdb->query($wpdb->prepare(
+            "UPDATE " . self::proposalTable() . " SET status='paid', paid_at=%s, updated_at=%s WHERE id=%d AND status='completed'",
+            $now,
+            $now,
+            (int)$proposal['databaseId']
+        ));
+        if ((int)$proposalUpdated !== 1) {
+            $wpdb->query('ROLLBACK');
+            throw new GraphQL\Error\UserError('وضعیت پیشنهاد برای ثبت پرداخت معتبر نیست.');
+        }
+        $wpdb->query('COMMIT');
         BTL_Notifications::push((int)$proposal['userId'], 'پرداخت Gold ثبت شد', 'پرداخت دستی معامله Gold شما ثبت شد.', '/my-account', 'gold');
         BTL_Admin_Audit::record(get_current_user_id(), 'GOLD_PAYOUT', 'gold_deal', $dealId, 'success', ['amount' => $amountDecimal]);
         return self::getPayout($dealId) ?: [];

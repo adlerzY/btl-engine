@@ -9,6 +9,17 @@ final class BTL_Login_Throttle
 
     public static function table(): string { global $wpdb; return $wpdb->prefix . 'btl_login_attempts'; }
 
+    private static function lockName(string $identifier): string
+    {
+        return 'btl_login_' . md5($identifier);
+    }
+
+    private static function releaseLock(string $identifier): void
+    {
+        global $wpdb;
+        $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', self::lockName($identifier)));
+    }
+
     public static function boot(): void
     {
         add_action('btl_login_attempts_cleanup', [self::class, 'cleanupExpired']);
@@ -60,12 +71,19 @@ final class BTL_Login_Throttle
     public static function assertAllowed(string $identifier, string $ip): void
     {
         global $wpdb;
+        $lockName = self::lockName($identifier);
+        $locked = (int) $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 5)', $lockName));
+        if ($locked !== 1) {
+            throw new GraphQL\Error\UserError('سامانه ورود مشغول است. کمی بعد تلاش کنید.');
+        }
+
         $count = (int) $wpdb->get_var($wpdb->prepare(
             "SELECT COUNT(*) FROM " . self::table() . " WHERE identifier=%s AND created_at > (UTC_TIMESTAMP() - INTERVAL %d SECOND)",
             $identifier, self::WINDOW_SECONDS
         ));
 
         if ($count >= self::MAX_ATTEMPTS) {
+            self::releaseLock($identifier);
             throw new GraphQL\Error\UserError('تعداد تلاش‌های ورود بیش از حد مجاز است. چند دقیقه دیگر تلاش کنید.');
         }
     }
@@ -78,11 +96,13 @@ final class BTL_Login_Throttle
             'ip_address' => $ip !== '' ? $ip : 'unknown',
             'created_at' => current_time('mysql', true),
         ]);
+        self::releaseLock($identifier);
     }
 
     public static function clearAttempts(string $identifier): void
     {
         global $wpdb;
         $wpdb->delete(self::table(), ['identifier' => $identifier]);
+        self::releaseLock($identifier);
     }
 }

@@ -61,8 +61,10 @@ final class BTL_Phone_Auth
                     throw new GraphQL\Error\UserError('شماره موبایل نامعتبر است.');
                 }
 
-                $otpRowId = BTL_Otp::validate($phone, self::PURPOSE, sanitize_text_field($input['code']));
+                $otpRowId = BTL_Otp::beginVerification($phone, self::PURPOSE, sanitize_text_field($input['code']));
+                $otpTransactionOpen = true;
 
+                try {
                 $existingUserId = self::findUserByPhone($phone);
                 $isNewUser = !$existingUserId;
 
@@ -70,6 +72,8 @@ final class BTL_Phone_Auth
                     $displayName = trim((string) ($input['displayName'] ?? ''));
 
                     if ($displayName === '') {
+                        BTL_Otp::rollbackVerification();
+                        $otpTransactionOpen = false;
                         return [
                             'authToken' => null, 'refreshToken' => null, 'isNewUser' => true,
                             'requiresProfile' => true,
@@ -83,7 +87,8 @@ final class BTL_Phone_Auth
                     $userId = $existingUserId;
                 }
 
-                BTL_Otp::consume($otpRowId);
+                BTL_Otp::finishVerification($otpRowId);
+                $otpTransactionOpen = false;
 
                 $user = get_userdata($userId);
                 if (!$user) {
@@ -121,6 +126,12 @@ final class BTL_Phone_Auth
                     'requiresAdminTotpSetup' => false,
                     'pendingTicket' => null,
                 ];
+                } catch (Throwable $e) {
+                    if ($otpTransactionOpen) {
+                        BTL_Otp::rollbackVerification();
+                    }
+                    throw $e;
+                }
             },
         ]);
     }

@@ -6,7 +6,7 @@ final class BTL_Migrations
     private const OPTION = 'btl_schema_version';
     private const ATTEMPT_OPTION = 'btl_schema_upgrade_attempt';
     private const RETRY_BACKOFF = 900;
-    private const VERSION = 10;
+    private const VERSION = 11;
 
     public static function boot(): void { add_action('init', [self::class, 'maybe_upgrade'], 4); }
     public static function maybe_upgrade(): void
@@ -21,10 +21,10 @@ final class BTL_Migrations
     public static function run_schema_upgrade(): void
     {
         self::cleanup_legacy_scheduler_state();
+        $success = self::ensure_phase11_indexes();
         self::prepare_legacy_secure_fields();
         self::prepare_global_cdkey_uniqueness();
         $installers=['BTL_Secure_Fields','BTL_Notifications','BTL_Sessions','BTL_Ticket_Replies','BTL_Otp','BTL_CdKey_Stock','BTL_Customer_Orders','BTL_Blog_Follow','BTL_Post_Ratings','BTL_Wishlist_Alerts','BTL_Login_Throttle', 'BTL_Admin_Audit', 'BTL_Admin_Tickets', 'BTL_Admin_Notifications'];
-        $success=true;
         foreach($installers as $class){
             if(!class_exists($class)||!is_callable([$class,'install']))continue;
             try{
@@ -62,6 +62,25 @@ final class BTL_Migrations
             if (class_exists('BTL_Otp')) { BTL_Otp::schedule_cleanup(); }
             if (class_exists('BTL_Login_Throttle')) { BTL_Login_Throttle::schedule_cleanup(); }
         }
+    }
+
+    private static function ensure_phase11_indexes(): bool
+    {
+        global $wpdb;
+        $table = $wpdb->prefix . 'btl_cdkey_stock';
+        if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table)) !== $table) return true;
+        $index = $wpdb->get_var($wpdb->prepare(
+            "SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND INDEX_NAME='status_reserved_at' LIMIT 1",
+            $table
+        ));
+        if ($index !== null) return true;
+        $wpdb->last_error = '';
+        $wpdb->query("ALTER TABLE {$table} ADD KEY status_reserved_at (status, reserved_at)");
+        if ($wpdb->last_error !== '') {
+            BTL_Helpers::logger('Migration: phase11 CD Key index failed: ' . $wpdb->last_error);
+            return false;
+        }
+        return true;
     }
 
     private static function prepare_legacy_secure_fields(): void
