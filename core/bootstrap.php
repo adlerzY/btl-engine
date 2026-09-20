@@ -64,7 +64,6 @@ function btl_autoload_core_class(string $class): void
             'BTL_Sessions' => 'Sessions.php',
             'BTL_Ticket_Replies' => 'TicketReplies.php',
             'BTL_Ticket_Admin' => 'TicketAdmin.php',
-            'BTL_Wishlist_Alerts' => 'WishlistAlerts.php',
             'BTL_Customer_Tickets' => 'CustomerTickets.php',
             'BTL_Customer_Reviews' => 'CustomerReviews.php',
             'BTL_Review_Moderation' => 'ReviewModeration.php',
@@ -210,7 +209,6 @@ add_action('btl_checkout_recovery', ['BTL_Customer_Orders', 'recoverStaleRequest
 add_action('graphql_register_types', ['BTL_Customer_Orders', 'register'], 10);
 add_action('transition_post_status', ['BTL_Blog_Follow', 'on_status_change'], 10, 3);
 add_action('graphql_register_types', ['BTL_Blog_Follow', 'register'], 20);
-add_action('btl_price_dropped', ['BTL_Wishlist_Alerts', 'notify_watchers'], 10, 3);
 // Blog ratings and Gold/user GraphQL are loaded only when GraphQL schema registration actually runs.
 add_action('graphql_register_types', ['BTL_Post_Ratings', 'register'], 10);
 // Gold storefront GraphQL is currently registered by its actual GraphQL owner when needed.

@@ -6,7 +6,7 @@ final class BTL_Migrations
     private const OPTION = 'btl_schema_version';
     private const ATTEMPT_OPTION = 'btl_schema_upgrade_attempt';
     private const RETRY_BACKOFF = 900;
-    private const VERSION = 11;
+    private const VERSION = 12;
 
     public static function boot(): void { add_action('init', [self::class, 'maybe_upgrade'], 4); }
     public static function maybe_upgrade(): void
@@ -21,10 +21,11 @@ final class BTL_Migrations
     public static function run_schema_upgrade(): void
     {
         self::cleanup_legacy_scheduler_state();
-        $success = self::ensure_phase11_indexes();
+        $success = self::cleanup_legacy_wishlist();
+        $success = self::ensure_phase11_indexes() && $success;
         self::prepare_legacy_secure_fields();
         self::prepare_global_cdkey_uniqueness();
-        $installers=['BTL_Secure_Fields','BTL_Notifications','BTL_Sessions','BTL_Ticket_Replies','BTL_Otp','BTL_CdKey_Stock','BTL_Customer_Orders','BTL_Blog_Follow','BTL_Post_Ratings','BTL_Wishlist_Alerts','BTL_Login_Throttle', 'BTL_Admin_Audit', 'BTL_Admin_Tickets', 'BTL_Admin_Notifications'];
+        $installers=['BTL_Secure_Fields','BTL_Notifications','BTL_Sessions','BTL_Ticket_Replies','BTL_Otp','BTL_CdKey_Stock','BTL_Customer_Orders','BTL_Blog_Follow','BTL_Post_Ratings','BTL_Login_Throttle', 'BTL_Admin_Audit', 'BTL_Admin_Tickets', 'BTL_Admin_Notifications'];
         foreach($installers as $class){
             if(!class_exists($class)||!is_callable([$class,'install']))continue;
             try{
@@ -62,6 +63,39 @@ final class BTL_Migrations
             if (class_exists('BTL_Otp')) { BTL_Otp::schedule_cleanup(); }
             if (class_exists('BTL_Login_Throttle')) { BTL_Login_Throttle::schedule_cleanup(); }
         }
+    }
+
+    private static function cleanup_legacy_wishlist(): bool
+    {
+        global $wpdb;
+        $success = true;
+
+        $table = $wpdb->prefix . 'btl_wishlist_snapshots';
+        $wpdb->last_error = '';
+        $wpdb->query("DROP TABLE IF EXISTS {$table}");
+        if ($wpdb->last_error !== '') {
+            $success = false;
+            BTL_Helpers::logger('Migration: legacy wishlist table cleanup failed: ' . $wpdb->last_error);
+        }
+
+        do {
+            $wpdb->last_error = '';
+            $deleted = $wpdb->query(
+                $wpdb->prepare(
+                    "DELETE FROM {$wpdb->usermeta} WHERE meta_key = %s LIMIT 1000",
+                    'btl_wishlist_ids'
+                )
+            );
+            if ($wpdb->last_error !== '') {
+                $success = false;
+                BTL_Helpers::logger('Migration: legacy wishlist user meta cleanup failed: ' . $wpdb->last_error);
+                break;
+            }
+        } while (is_int($deleted) && $deleted > 0);
+
+        delete_option('btl_wishlist_snapshots_table_ready');
+
+        return $success;
     }
 
     private static function ensure_phase11_indexes(): bool

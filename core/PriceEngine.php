@@ -390,9 +390,6 @@ final class BTL_Price_Engine
             $dirty = true;
         }
 
-        if ($dirty && $old_active > 0 && $active < $old_active) {
-            do_action('btl_price_dropped', $product->get_id(), $old_active, $active);
-        }
 
         return $dirty;
     }

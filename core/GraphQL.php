@@ -892,62 +892,6 @@ final class BTL_GraphQL
 
     private static function register_user_fields(): void
     {
-        register_graphql_field('User', 'wishlistIds', [
-            'type' => ['list_of' => 'Int'],
-            'resolve' => static function ($user) {
-                $currentUserId = get_current_user_id();
-
-                if (!$currentUserId || $currentUserId !== (int)$user->databaseId) {
-                    return [];
-                }
-
-                $ids = get_user_meta($currentUserId, 'btl_wishlist_ids', true);
-
-                if (!is_array($ids)) {
-                    return [];
-                }
-
-                return array_values(array_map('intval', $ids));
-            },
-        ]);
-
-        register_graphql_mutation('toggleWishlistItem', [
-            'inputFields' => [
-                'productId' => ['type' => ['non_null' => 'Int']],
-            ],
-            'outputFields' => [
-                'inWishlist' => ['type' => 'Boolean'],
-            ],
-            'mutateAndGetPayload' => function ($input) {
-                if (!is_user_logged_in()) {
-                    throw new GraphQL\Error\UserError('باید وارد حساب کاربری شوید.');
-                }
-
-                $userId = get_current_user_id();
-                $productId = (int)$input['productId'];
-
-                $ids = get_user_meta($userId, 'btl_wishlist_ids', true);
-
-                if (!is_array($ids)) {
-                    $ids = [];
-                }
-
-                $inWishlist = in_array($productId, $ids, true);
-
-                if ($inWishlist) {
-                    $ids = array_values(array_diff($ids, [$productId]));
-                    BTL_Wishlist_Alerts::clear_on_remove($userId, $productId);
-                } else {
-                    $ids[] = $productId;
-                    BTL_Wishlist_Alerts::snapshot_on_add($userId, $productId);
-                }
-
-                update_user_meta($userId, 'btl_wishlist_ids', $ids);
-
-                return ['inWishlist' => !$inWishlist];
-            },
-        ]);
-
         register_graphql_field('User', 'avatarUrl', [
             'type' => 'String',
             'resolve' => static function ($user) {

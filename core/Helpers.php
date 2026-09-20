@@ -142,7 +142,6 @@ final class BTL_Helpers
             'btl_otp_codes_table_ready',
             'btl_post_ratings_table_ready',
             'btl_blog_follows_table_ready',
-            'btl_wishlist_snapshots_table_ready',
             'btl_login_attempts_table_ready',
             'btl_cdkey_stock_table_ready',
         ];
