@@ -142,7 +142,6 @@ final class BTL_Customer_Orders
         if ($variationId > 0) {
             if (!$product instanceof WC_Product_Variation || (int)$product->get_parent_id() !== $productId) throw new GraphQL\Error\UserError('تنوع انتخاب‌شده متعلق به این محصول نیست.');
         } elseif ($product->is_type('variation')) throw new GraphQL\Error\UserError('تنوع محصول نامعتبر است.');
-        elseif ($product->is_type('variable')) throw new GraphQL\Error\UserError('برای محصولات متغیر، انتخاب Variation الزامی است.');
         if (get_post_status($variationId ? $product->get_parent_id() : $productId) !== 'publish') throw new GraphQL\Error\UserError('محصول انتخاب‌شده منتشر نشده است.');
 
         $delivery = ''; $region = ''; $credentials = []; $publicMeta = [];

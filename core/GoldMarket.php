@@ -10,6 +10,11 @@ final class BTL_Gold_Market
     private const MAX_AMOUNT = 1000000000000;
     private const CLAIM_MINUTES = 15;
 
+    public static function boot(): void
+    {
+        add_action('graphql_register_types', [self::class, 'register_user_graphql'], 11);
+    }
+
     public static function buyTable(): string { global $wpdb; return $wpdb->prefix . 'btl_gold_buy_orders'; }
     public static function proposalTable(): string { global $wpdb; return $wpdb->prefix . 'btl_gold_proposals'; }
     public static function dealTable(): string { global $wpdb; return $wpdb->prefix . 'btl_gold_deals'; }
@@ -46,7 +51,7 @@ final class BTL_Gold_Market
             PRIMARY KEY (id),
             KEY status_created (status, created_at),
             KEY game_region (game_slug, region)
-        ) {$charset} ENGINE=InnoDB;";
+        ) {$charset};";
         dbDelta($sql);
     }
 
@@ -75,7 +80,7 @@ final class BTL_Gold_Market
             KEY order_status (buy_order_id, status, id),
             KEY user_status (user_id, status, id),
             KEY claim_expiry (status, claim_expires_at)
-        ) {$charset} ENGINE=InnoDB;";
+        ) {$charset};";
         dbDelta($sql);
     }
 
@@ -101,7 +106,7 @@ final class BTL_Gold_Market
             UNIQUE KEY proposal_unique (proposal_id),
             KEY status_updated (status, updated_at),
             KEY seller_status (seller_user_id, status)
-        ) {$charset} ENGINE=InnoDB;";
+        ) {$charset};";
         dbDelta($sql);
     }
 
@@ -124,7 +129,7 @@ final class BTL_Gold_Market
             PRIMARY KEY (id),
             UNIQUE KEY deal_once (deal_id),
             KEY user_date (user_id, paid_at)
-        ) {$charset} ENGINE=InnoDB;";
+        ) {$charset};";
         dbDelta($sql);
     }
 
@@ -212,64 +217,27 @@ final class BTL_Gold_Market
     public static function startDeal(int $proposalId): array
     {
         global $wpdb;
-        $adminId = get_current_user_id();
-        if ($proposalId < 1 || $adminId < 1) throw new GraphQL\Error\UserError('اطلاعات شروع معامله نامعتبر است.');
-        if ($wpdb->query('START TRANSACTION') === false) {
-            throw new GraphQL\Error\UserError('شروع معامله در حال حاضر ممکن نیست.');
-        }
-        try {
-            $row = $wpdb->get_row($wpdb->prepare(
-                'SELECT p.*, b.timer_minutes AS buy_timer_minutes
-                 FROM ' . self::proposalTable() . ' p
-                 INNER JOIN ' . self::buyTable() . ' b ON b.id=p.buy_order_id
-                 WHERE p.id=%d
-                 LIMIT 1
-                 FOR UPDATE',
-                $proposalId
-            ), ARRAY_A);
-            if (!$row) throw new GraphQL\Error\UserError('پیشنهاد پیدا نشد.');
-            if ((string)$row['status'] !== 'claimed') throw new GraphQL\Error\UserError('این پیشنهاد برای شروع معامله آماده نیست.');
-            if ((int)$row['claimed_by'] !== $adminId) throw new GraphQL\Error\UserError('این پیشنهاد توسط مدیر دیگری Claim شده است.');
-            if (!empty($row['claim_expires_at']) && strtotime((string)$row['claim_expires_at']) < time()) throw new GraphQL\Error\UserError('زمان Claim این پیشنهاد تمام شده است.');
-
-            $now = current_time('mysql', true);
-            $timerMinutes = max(0, (int)$row['buy_timer_minutes']);
-            $expires = $timerMinutes > 0 ? gmdate('Y-m-d H:i:s', time() + $timerMinutes * 60) : null;
-
-            $updated = $wpdb->query($wpdb->prepare(
-                "UPDATE " . self::proposalTable() . " SET status='timer', updated_at=%s WHERE id=%d AND status='claimed' AND claimed_by=%d",
-                $now,
-                $proposalId,
-                $adminId
-            ));
-            if ((int)$updated !== 1) throw new GraphQL\Error\UserError('وضعیت پیشنهاد برای شروع معامله تغییر کرده است.');
-
-            $inserted = $wpdb->insert(self::dealTable(), [
-                'buy_order_id' => (int)$row['buy_order_id'],
-                'proposal_id' => $proposalId,
-                'seller_user_id' => (int)$row['user_id'],
-                'status' => 'timer',
-                'timer_expires_at' => $expires,
-                'started_by' => $adminId,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ], ['%d','%d','%d','%s','%s','%d','%s','%s']);
-            if ($inserted === false) throw new GraphQL\Error\UserError('ثبت معامله انجام نشد.');
-            $dealId = (int)$wpdb->insert_id;
-            if ($dealId < 1) throw new GraphQL\Error\UserError('شناسه معامله ایجاد نشد.');
-
-            if ($wpdb->query('COMMIT') === false) {
-                $wpdb->query('ROLLBACK');
-                throw new GraphQL\Error\UserError('ثبت نهایی معامله انجام نشد.');
-            }
-        } catch (Throwable $e) {
-            $wpdb->query('ROLLBACK');
-            if ($e instanceof GraphQL\Error\UserError) throw $e;
-            BTL_Helpers::logger('Gold startDeal failed: ' . $e->getMessage());
-            throw new GraphQL\Error\UserError('شروع معامله انجام نشد.');
-        }
-
-        BTL_Admin_Audit::record($adminId, 'GOLD_DEAL_START', 'gold_deal', $dealId, 'success', ['proposal_id' => $proposalId]);
+        $proposal = self::getProposal($proposalId);
+        if (!$proposal || !in_array($proposal['status'], ['claimed'], true)) throw new GraphQL\Error\UserError('این پیشنهاد برای شروع معامله آماده نیست.');
+        if ((int)$proposal['claimedBy'] !== get_current_user_id()) throw new GraphQL\Error\UserError('این پیشنهاد توسط مدیر دیگری Claim شده است.');
+        if (!empty($proposal['claimExpiresAt']) && strtotime($proposal['claimExpiresAt']) < time()) throw new GraphQL\Error\UserError('زمان Claim این پیشنهاد تمام شده است.');
+        $order = self::getBuyOrder((int)$proposal['buyOrderId']);
+        $timerMinutes = $order && isset($order['timer_minutes']) ? (int)$order['timer_minutes'] : 0;
+        $expires = $timerMinutes > 0 ? gmdate('Y-m-d H:i:s', time() + $timerMinutes * 60) : null;
+        $now = current_time('mysql', true);
+        $wpdb->update(self::proposalTable(), ['status' => 'timer', 'updated_at' => $now], ['id' => $proposalId], ['%s','%s'], ['%d']);
+        $wpdb->insert(self::dealTable(), [
+            'buy_order_id' => (int)$proposal['buyOrderId'],
+            'proposal_id' => $proposalId,
+            'seller_user_id' => (int)$proposal['userId'],
+            'status' => 'timer',
+            'timer_expires_at' => $expires,
+            'started_by' => get_current_user_id(),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], ['%d','%d','%d','%s','%s','%d','%s','%s']);
+        $dealId = (int)$wpdb->insert_id;
+        BTL_Admin_Audit::record(get_current_user_id(), 'GOLD_DEAL_START', 'gold_deal', $dealId, 'success', ['proposal_id' => $proposalId]);
         return self::getDeal($dealId) ?: [];
     }
 
@@ -309,15 +277,10 @@ final class BTL_Gold_Market
         if (!$deal) throw new GraphQL\Error\UserError('معامله پیدا نشد.');
         $proposal = self::getProposal((int)$deal['proposalId']);
         if (!$proposal) throw new GraphQL\Error\UserError('پیشنهاد مرتبط پیدا نشد.');
-        $requestedAmount = (int)$proposal['amount'];
-        $amount = $amount > 0 ? $amount : $requestedAmount;
-        if ($amount !== $requestedAmount) {
-            throw new GraphQL\Error\UserError('تحویل ناقص Gold قابل تأیید نیست؛ مقدار تحویل باید دقیقاً برابر مقدار پیشنهاد باشد.');
-        }
+        $amount = $amount > 0 ? $amount : (int)$proposal['amount'];
+        $amount = min($amount, (int)$proposal['amount']);
         $now = current_time('mysql', true);
-        if ($wpdb->query('START TRANSACTION') === false) {
-            throw new GraphQL\Error\UserError('شروع تأیید تحویل در حال حاضر ممکن نیست.');
-        }
+        $wpdb->query('START TRANSACTION');
         $updated = $wpdb->query($wpdb->prepare(
             "UPDATE " . self::dealTable() . " SET status='completed', delivered_amount=%d, delivery_confirmed_at=%s, updated_at=%s WHERE id=%d AND status IN ('timer','active','suspended')",
             $amount,
@@ -339,10 +302,7 @@ final class BTL_Gold_Market
             $wpdb->query('ROLLBACK');
             throw new GraphQL\Error\UserError('وضعیت پیشنهاد مرتبط برای تأیید تحویل معتبر نیست.');
         }
-        if ($wpdb->query('COMMIT') === false) {
-            $wpdb->query('ROLLBACK');
-            throw new GraphQL\Error\UserError('ثبت نهایی تحویل انجام نشد.');
-        }
+        $wpdb->query('COMMIT');
         self::maybeCompleteBuyOrder((int)$deal['buyOrderId']);
         BTL_Notifications::push((int)$proposal['userId'], 'تحویل Gold تأیید شد', 'تحویل Gold شما تأیید شد و معامله وارد مرحله پرداخت شد.', '/my-account', 'gold');
         BTL_Admin_Audit::record(get_current_user_id(), 'GOLD_CONFIRM_RECEIVED', 'gold_deal', $dealId, 'success', ['delivered_amount' => $amount]);
@@ -358,31 +318,10 @@ final class BTL_Gold_Market
         if (!$proposal) throw new GraphQL\Error\UserError('پیشنهاد مرتبط پیدا نشد.');
         $existing = $wpdb->get_var($wpdb->prepare('SELECT id FROM ' . self::payoutTable() . ' WHERE deal_id=%d LIMIT 1', $dealId));
         if ($existing) throw new GraphQL\Error\UserError('پرداخت این معامله قبلاً ثبت شده است.');
-        $amountDecimal = self::normalizeDecimalString($amount);
-        if ($amountDecimal === '0') throw new GraphQL\Error\UserError('مبلغ پرداخت نامعتبر است.');
-
-        $offerAmount = self::normalizeDecimalString((string)($proposal['offerAmount'] ?? '0'));
-        if ($offerAmount === '0' || self::compareDecimalStrings($amountDecimal, $offerAmount) > 0) {
-            throw new GraphQL\Error\UserError('مبلغ پرداخت نمی‌تواند بیشتر از سقف مبلغ این خرید باشد.');
-        }
-
-        $buyAmount = (int)($proposal['buyAmount'] ?? 0);
-        $proposalAmount = (int)($proposal['amount'] ?? 0);
-        if ($buyAmount < 1 || $proposalAmount < 1 || $proposalAmount > $buyAmount) {
-            throw new GraphQL\Error\UserError('مبنای محاسبه پرداخت این معامله نامعتبر است.');
-        }
-        $expectedPayout = self::divideDecimalByInt(
-            self::multiplyDecimalByInt($offerAmount, $proposalAmount),
-            $buyAmount
-        );
-        if (self::compareDecimalStrings($amountDecimal, $expectedPayout) > 0) {
-            throw new GraphQL\Error\UserError('مبلغ پرداخت بیشتر از مبلغ مجاز این معامله است.');
-        }
-
+        $amountDecimal = self::normalizeDecimal($amount);
+        if ($amountDecimal <= 0) throw new GraphQL\Error\UserError('مبلغ پرداخت نامعتبر است.');
         $now = current_time('mysql', true);
-        if ($wpdb->query('START TRANSACTION') === false) {
-            throw new GraphQL\Error\UserError('شروع ثبت پرداخت در حال حاضر ممکن نیست.');
-        }
+        $wpdb->query('START TRANSACTION');
         $ok = $wpdb->insert(self::payoutTable(), [
             'deal_id' => $dealId,
             'proposal_id' => (int)$proposal['databaseId'],
@@ -393,7 +332,7 @@ final class BTL_Gold_Market
             'note' => $note !== null ? sanitize_textarea_field($note) : null,
             'paid_at' => $now,
             'created_at' => $now,
-        ], ['%d','%d','%d','%s','%s','%d','%s','%s','%s']);
+        ], ['%d','%d','%d','%f','%s','%d','%s','%s','%s']);
         if (!$ok) {
             $wpdb->query('ROLLBACK');
             throw new GraphQL\Error\UserError('ثبت پرداخت انجام نشد.');
@@ -408,10 +347,7 @@ final class BTL_Gold_Market
             $wpdb->query('ROLLBACK');
             throw new GraphQL\Error\UserError('وضعیت پیشنهاد برای ثبت پرداخت معتبر نیست.');
         }
-        if ($wpdb->query('COMMIT') === false) {
-            $wpdb->query('ROLLBACK');
-            throw new GraphQL\Error\UserError('ثبت نهایی پرداخت انجام نشد.');
-        }
+        $wpdb->query('COMMIT');
         BTL_Notifications::push((int)$proposal['userId'], 'پرداخت Gold ثبت شد', 'پرداخت دستی معامله Gold شما ثبت شد.', '/my-account', 'gold');
         BTL_Admin_Audit::record(get_current_user_id(), 'GOLD_PAYOUT', 'gold_deal', $dealId, 'success', ['amount' => $amountDecimal]);
         return self::getPayout($dealId) ?: [];
@@ -561,59 +497,5 @@ final class BTL_Gold_Market
     {
         $normalized = str_replace([',', ' '], '', (string)$value);
         return max(0.0, (float)$normalized);
-    }
-
-    private static function normalizeDecimalString($value): string
-    {
-        $normalized = str_replace([',', ' '], '', trim((string)$value));
-        if ($normalized === '') return '0';
-        if (!preg_match('/^\d+(?:\.0+)?$/', $normalized)) {
-            throw new GraphQL\Error\UserError('مبلغ باید یک عدد صحیح معتبر باشد.');
-        }
-        $integer = explode('.', $normalized, 2)[0];
-        $integer = ltrim($integer, '0');
-        return $integer === '' ? '0' : $integer;
-    }
-
-    private static function compareDecimalStrings(string $left, string $right): int
-    {
-        $left = ltrim($left, '0') ?: '0';
-        $right = ltrim($right, '0') ?: '0';
-        if (strlen($left) !== strlen($right)) return strlen($left) <=> strlen($right);
-        return strcmp($left, $right) <=> 0;
-    }
-
-    private static function multiplyDecimalByInt(string $value, int $multiplier): string
-    {
-        if ($multiplier < 0) throw new GraphQL\Error\UserError('مقدار محاسبه نامعتبر است.');
-        if ($value === '0' || $multiplier === 0) return '0';
-        $carry = 0;
-        $out = '';
-        for ($i = strlen($value) - 1; $i >= 0; $i--) {
-            $digit = ord($value[$i]) - 48;
-            $product = ($digit * $multiplier) + $carry;
-            $out = (string)($product % 10) . $out;
-            $carry = intdiv($product, 10);
-        }
-        while ($carry > 0) {
-            $out = (string)($carry % 10) . $out;
-            $carry = intdiv($carry, 10);
-        }
-        return ltrim($out, '0') ?: '0';
-    }
-
-    private static function divideDecimalByInt(string $value, int $divisor): string
-    {
-        if ($divisor < 1) throw new GraphQL\Error\UserError('مبنای محاسبه پرداخت نامعتبر است.');
-        $remainder = 0;
-        $quotient = '';
-        for ($i = 0, $length = strlen($value); $i < $length; $i++) {
-            $remainder = ($remainder * 10) + (ord($value[$i]) - 48);
-            if ($quotient !== '' || $remainder >= $divisor) {
-                $quotient .= (string)intdiv($remainder, $divisor);
-                $remainder %= $divisor;
-            }
-        }
-        return ltrim($quotient, '0') ?: '0';
     }
 }

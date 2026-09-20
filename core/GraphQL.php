@@ -1263,6 +1263,25 @@ final class BTL_GraphQL
         return $numeric === '' ? null : (float)$numeric;
     }
 
+    private static function load_variation_objects(array $children): array
+    {
+        $variationObjects = [];
+
+        foreach ($children as $variationId) {
+            $variationId = (int) $variationId;
+            if ($variationId <= 0) {
+                continue;
+            }
+
+            $variation = wc_get_product($variationId);
+            if ($variation instanceof WC_Product_Variation) {
+                $variationObjects[$variationId] = $variation;
+            }
+        }
+
+        return $variationObjects;
+    }
+
     public static function archive_pricing(int $product_id, string $region_slug): array
     {
         $product_id = (int)$product_id;
@@ -1329,19 +1348,7 @@ final class BTL_GraphQL
                     }
                 };
 
-                $variationObjects = [];
-                if (function_exists('wc_get_products')) {
-                    $loadedVariations = wc_get_products([
-                        'include' => $children,
-                        'limit' => -1,
-                        'return' => 'objects',
-                    ]);
-                    foreach ($loadedVariations as $loadedVariation) {
-                        if ($loadedVariation instanceof WC_Product) {
-                            $variationObjects[(int)$loadedVariation->get_id()] = $loadedVariation;
-                        }
-                    }
-                }
+                $variationObjects = self::load_variation_objects($children);
 
                 foreach ($children as $variationId) {
                     $variation = $variationObjects[$variationId] ?? null;
@@ -1441,20 +1448,9 @@ final class BTL_GraphQL
                 return [];
             }
 
-            $loadedVariations = wc_get_products([
-                'include' => array_map('absint', $children),
-                'limit' => -1,
-                'return' => 'objects',
-            ]);
-            if (!is_array($loadedVariations) || !$loadedVariations) {
+            $byId = self::load_variation_objects($children);
+            if (!$byId) {
                 return [];
-            }
-
-            $byId = [];
-            foreach ($loadedVariations as $variation) {
-                if ($variation instanceof WC_Product_Variation) {
-                    $byId[(int) $variation->get_id()] = $variation;
-                }
             }
 
             $cards = [];

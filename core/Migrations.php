@@ -6,7 +6,7 @@ final class BTL_Migrations
     private const OPTION = 'btl_schema_version';
     private const ATTEMPT_OPTION = 'btl_schema_upgrade_attempt';
     private const RETRY_BACKOFF = 900;
-    private const VERSION = 13;
+    private const VERSION = 12;
 
     public static function boot(): void { add_action('init', [self::class, 'maybe_upgrade'], 4); }
     public static function maybe_upgrade(): void
@@ -51,7 +51,6 @@ final class BTL_Migrations
                 BTL_Helpers::logger('Migration: Gold tables failed: '.$e->getMessage());
             }
         }
-        if($success && !self::ensure_gold_innodb_tables())$success=false;
         if(class_exists('BTL_Notifications')&&is_callable(['BTL_Notifications','maybe_add_type_column'])){
             try{BTL_Notifications::maybe_add_type_column();}catch(Throwable $e){$success=false;BTL_Helpers::logger('Migration: notification type column update failed');}
         }
@@ -64,34 +63,6 @@ final class BTL_Migrations
             if (class_exists('BTL_Otp')) { BTL_Otp::schedule_cleanup(); }
             if (class_exists('BTL_Login_Throttle')) { BTL_Login_Throttle::schedule_cleanup(); }
         }
-    }
-
-    private static function ensure_gold_innodb_tables(): bool
-    {
-        global $wpdb;
-        if (!class_exists('BTL_Gold_Market')) return true;
-        $success = true;
-        foreach ([
-            BTL_Gold_Market::buyTable(),
-            BTL_Gold_Market::proposalTable(),
-            BTL_Gold_Market::dealTable(),
-            BTL_Gold_Market::payoutTable(),
-        ] as $table) {
-            $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table));
-            if ($exists !== $table) continue;
-            $engine = $wpdb->get_var($wpdb->prepare(
-                'SELECT ENGINE FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s LIMIT 1',
-                $table
-            ));
-            if (strtoupper((string)$engine) === 'INNODB') continue;
-            $wpdb->last_error = '';
-            $wpdb->query("ALTER TABLE {$table} ENGINE=InnoDB");
-            if ($wpdb->last_error !== '') {
-                $success = false;
-                BTL_Helpers::logger('Migration: Gold table InnoDB conversion failed for ' . $table . ': ' . $wpdb->last_error);
-            }
-        }
-        return $success;
     }
 
     private static function cleanup_legacy_wishlist(): bool
