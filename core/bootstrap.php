@@ -192,6 +192,7 @@ add_action('wp_insert_comment', ['BTL_Admin_Notifications', 'notify_new_review']
 // GraphQL/session surface.
 add_action('graphql_register_types', ['BTL_Sessions', 'register'], 10);
 add_filter('graphql_request_data', ['BTL_Sessions', 'authorizeGraphqlRequest'], 5, 2);
+add_filter('graphql_jwt_auth_signed_token', ['BTL_Sessions', 'bindRefreshedToken'], 10, 2);
 add_action('graphql_register_types', ['BTL_Customer_Tickets', 'register'], 9);
 add_action('graphql_register_types', ['BTL_Blog_Comments', 'register'], 10);
 add_action('graphql_register_types', ['BTL_Customer_Reviews', 'register'], 10);
@@ -209,9 +210,8 @@ add_action('btl_checkout_recovery', ['BTL_Customer_Orders', 'recoverStaleRequest
 add_action('graphql_register_types', ['BTL_Customer_Orders', 'register'], 10);
 add_action('transition_post_status', ['BTL_Blog_Follow', 'on_status_change'], 10, 3);
 add_action('graphql_register_types', ['BTL_Blog_Follow', 'register'], 20);
-// Blog ratings and Gold/user GraphQL are loaded only when GraphQL schema registration actually runs.
+// Blog ratings and Gold storefront GraphQL are loaded only when their owning module registers them.
 add_action('graphql_register_types', ['BTL_Post_Ratings', 'register'], 10);
-// Gold storefront GraphQL is currently registered by its actual GraphQL owner when needed.
 add_action('graphql_register_types', ['BTL_Admin_Totp', 'register'], 10);
 add_action('graphql_register_types', ['BTL_Admin_Sms_Auth', 'register'], 10);
 add_action('graphql_register_types', ['BTL_Phone_Auth', 'register'], 10);

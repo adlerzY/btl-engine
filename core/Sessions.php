@@ -24,6 +24,7 @@ final class BTL_Sessions
         add_action('graphql_register_types', [self::class, 'register'], 10);
         // Reject bearer-token GraphQL requests unless the token is bound to a live session.
         add_filter('graphql_request_data', [self::class, 'authorizeGraphqlRequest'], 5, 2);
+        add_filter('graphql_jwt_auth_signed_token', [self::class, 'bindRefreshedToken'], 10, 2);
     }
 
     public static function maybe_install(): void
@@ -333,6 +334,34 @@ final class BTL_Sessions
         if (!preg_match('/^Bearer\s+(.+)$/i', $authorization, $m)) return '';
         $token = trim($m[1]);
         return $token === '' ? '' : hash('sha256', $token);
+    }
+
+    public static function bindRefreshedToken($token, $userId)
+    {
+        if (!is_string($token) || $token === '' || (int)$userId < 1) return $token;
+        if ((string)($_SERVER['HTTP_X_BTL_SESSION_REFRESH'] ?? '') !== '1') return $token;
+
+        $sessionId = self::requestSessionId();
+        $previousTokenHash = self::previousTokenHash();
+        if ($sessionId === '' || $previousTokenHash === '') return null;
+
+        global $wpdb;
+        $currentTokenHash = hash('sha256', $token);
+        $updated = $wpdb->query($wpdb->prepare(
+            'UPDATE ' . self::table() . ' SET token_hash=%s,last_active=%s WHERE user_id=%d AND session_id=%s AND token_hash=%s AND revoked=0',
+            $currentTokenHash,
+            current_time('mysql', true),
+            (int)$userId,
+            $sessionId,
+            $previousTokenHash
+        ));
+        if ($updated !== 1) {
+            self::clearRequestSessionCache();
+            return null;
+        }
+
+        self::clearRequestSessionCache();
+        return $token;
     }
 
     private static function validBootstrapProof(string $sessionId, string $tokenHash): bool
