@@ -295,29 +295,7 @@ final class BTL_GraphQL
 
     private static function region_aliases(string $regionSlug): array
     {
-        $map = [
-            'eu' => ['eu', 'eu-global', 'اروپا', 'europe'],
-            'us' => ['us', 'امریکا', 'آمریکا', 'america', 'usa'],
-            'tr' => ['tr', 'ترکیه', 'turkey'],
-            'ua' => ['ua', 'اوکراین', 'ukraine'],
-        ];
-
-        $slug = strtolower(trim($regionSlug));
-
-        if (isset($map[$slug])) {
-            return $map[$slug];
-        }
-
-        foreach ($map as $aliases) {
-            foreach ($aliases as $alias) {
-                $alias = strtolower(trim($alias));
-                if ($alias !== '' && ($slug === $alias || strpos($slug, $alias) !== false)) {
-                    return $aliases;
-                }
-            }
-        }
-
-        return [$regionSlug];
+        return BTL_Region_Registry::aliases($regionSlug);
     }
 
     public static function invalidate_region_cache(): void
@@ -422,6 +400,7 @@ final class BTL_GraphQL
                 'price' => ['type' => 'String'],
                 'regularPrice' => ['type' => 'String'],
                 'isAvailableInRegion' => ['type' => 'Boolean'],
+                'commissionDiscountBadge' => ['type' => 'Boolean'],
             ],
         ]);
 
@@ -435,11 +414,16 @@ final class BTL_GraphQL
                 'salePrice'             => ['type' => 'String'],
                 'imageUrl'              => ['type' => 'String'],
                 'attributes'            => ['type' => ['list_of' => 'VariationAttributeItem']],
-                'giftPriceToman'        => ['type' => 'String'],
-                'codePriceToman'        => ['type' => 'String'],
-                'giftRegularPriceToman' => ['type' => 'String'],
-                'codeRegularPriceToman' => ['type' => 'String'],
+                'giftPrice'             => ['type' => 'String'],
+                'codePrice'             => ['type' => 'String'],
+                'giftRegularPrice'      => ['type' => 'String'],
+                'codeRegularPrice'      => ['type' => 'String'],
                 'regionSlug'            => ['type' => 'String'],
+                'currency'              => ['type' => 'String'],
+                'currencySymbol'        => ['type' => 'String'],
+                'gameDiscountPercent'   => ['type' => 'Float'],
+                'commissionDiscountPercent' => ['type' => 'Float'],
+                'commissionDiscountBadge' => ['type' => 'Boolean'],
             ],
         ]);
 
@@ -1248,19 +1232,19 @@ final class BTL_GraphQL
             return null;
         }
 
-        $parts = preg_split('/[-–—]|&ndash;/u', $value);
-        $value = trim((string)($parts[0] ?? $value));
-
         $value = strtr($value, [
             '۰' => '0', '۱' => '1', '۲' => '2', '۳' => '3', '۴' => '4',
             '۵' => '5', '۶' => '6', '۷' => '7', '۸' => '8', '۹' => '9',
             '٠' => '0', '١' => '1', '٢' => '2', '٣' => '3', '٤' => '4',
             '٥' => '5', '٦' => '6', '٧' => '7', '٨' => '8', '٩' => '9',
         ]);
+        $parts = preg_split('/\s*(?:-|–|—|&ndash;)\s*/u', $value);
+        $value = trim((string)($parts[0] ?? $value));
 
-        $numeric = preg_replace('/[^0-9]/', '', $value);
-
-        return $numeric === '' ? null : (float)$numeric;
+        $numeric = str_replace([',', '،', ' '], '', $value);
+        if (!preg_match('/^\d+(?:\.\d+)?$/', $numeric)) return null;
+        $number = (float)$numeric;
+        return is_finite($number) && $number >= 0 ? $number : null;
     }
 
     private static function load_variation_objects(array $children): array
@@ -1298,6 +1282,7 @@ final class BTL_GraphQL
                         'price' => null,
                         'regularPrice' => null,
                         'isAvailableInRegion' => false,
+                        'commissionDiscountBadge' => false,
                     ];
                 }
 
@@ -1307,6 +1292,7 @@ final class BTL_GraphQL
                         'price' => null,
                         'regularPrice' => null,
                         'isAvailableInRegion' => false,
+                        'commissionDiscountBadge' => false,
                     ];
                 }
 
@@ -1337,12 +1323,13 @@ final class BTL_GraphQL
                 ];
                 $hasRegionAttr = false;
                 $regionVariationCount = 0;
+                $regionCommissionDiscountBadge = false;
 
                 $updateTier = static function (&$tier, $price, $regular): void {
                     $price = self::parse_price_value($price);
-                    if ($price === null || $price <= 0) return;
+                    if ($price === null) return;
                     $regular = self::parse_price_value($regular);
-                    if ($regular === null || $regular <= 0) $regular = $price;
+                    if ($regular === null) $regular = $price;
                     if ($tier === null || $price < $tier['price']) {
                         $tier = ['price' => $price, 'regularPrice' => $regular];
                     }
@@ -1354,26 +1341,27 @@ final class BTL_GraphQL
                     $variation = $variationObjects[$variationId] ?? null;
                     if (!$variation) continue;
 
-                    $manualGift = $variation->get_meta('_gift_price_toman');
-                    $manualCode = $variation->get_meta('_code_price_toman');
-                    $giftPrice = $manualGift !== '' ? $manualGift : $variation->get_meta('giftPriceToman');
-                    $giftRegular = $manualGift !== '' ? $manualGift : $variation->get_meta('giftRegularPriceToman');
-                    $codePrice = $manualCode !== '' ? $manualCode : $variation->get_meta('codePriceToman');
-                    $codeRegular = $manualCode !== '' ? $manualCode : $variation->get_meta('codeRegularPriceToman');
+                    $giftPrice = $variation->get_meta('_btl_gift_final_price');
+                    $giftRegular = $variation->get_meta('_btl_gift_regular_price');
+                    $codePrice = $variation->get_meta('_btl_code_final_price');
+                    $codeRegular = $variation->get_meta('_btl_code_regular_price');
+                    if ($giftRegular === '') $giftRegular = $giftPrice;
+                    if ($codeRegular === '') $codeRegular = $codePrice;
 
                     $giftPriceValue = self::parse_price_value($giftPrice);
                     $giftRegularValue = self::parse_price_value($giftRegular);
                     $codePriceValue = self::parse_price_value($codePrice);
                     $codeRegularValue = self::parse_price_value($codeRegular);
+                    $commissionDiscount = BTL_Price_Engine::priceValue($variation->get_meta('_btl_commission_discount')) ?? 0.0;
 
                     $directPrice = $variation->get_price();
                     $directRegular = $variation->get_regular_price();
                     $hasCodeStock = ((int)($stockCounts[$variationId] ?? 0)) > 0;
                     $directPriceValue = self::parse_price_value($directPrice);
                     $directRegularValue = self::parse_price_value($directRegular);
-                    $directValid = $directPriceValue !== null && $directPriceValue > 0;
-                    $giftValid = $giftPriceValue !== null && $giftPriceValue > 0;
-                    $codeValid = $codePriceValue !== null && $codePriceValue > 0 && $hasCodeStock;
+                    $directValid = $directPriceValue !== null;
+                    $giftValid = $giftPriceValue !== null;
+                    $codeValid = $codePriceValue !== null && $hasCodeStock;
                     $anyGiftOrCode = $giftPriceValue !== null || $codePriceValue !== null;
 
                     if ($directValid) {
@@ -1405,6 +1393,7 @@ final class BTL_GraphQL
                     $hasRegionAttr = true;
                     if (!$matchesRegion) continue;
                     $regionVariationCount++;
+                    if ($commissionDiscount > 0) $regionCommissionDiscountBadge = true;
 
                     if ($directValid) {
                         $region['hasDirectPrice'] = true;
@@ -1426,6 +1415,7 @@ final class BTL_GraphQL
                     'price' => $picked !== null ? (string)$picked['price'] : null,
                     'regularPrice' => $picked !== null ? (string)$picked['regularPrice'] : null,
                     'isAvailableInRegion' => (bool)$available,
+                    'commissionDiscountBadge' => (bool)$regionCommissionDiscountBadge,
                 ];
             },
             'btl',
@@ -1466,10 +1456,7 @@ final class BTL_GraphQL
 
     private static function build_card(WC_Product $variation, WC_Product $parent): array
     {
-        $manual_gift = $variation->get_meta('_gift_price_toman');
-        $manual_code = $variation->get_meta('_code_price_toman');
-
-        $region_slug = 'eu';
+        $region_slug = null;
 
         foreach ($variation->get_variation_attributes() as $key => $value) {
             $taxonomy = str_replace('attribute_', '', $key);
@@ -1482,6 +1469,13 @@ final class BTL_GraphQL
                 break;
             }
         }
+        $regionConfig = $region_slug !== null ? BTL_Region_Registry::config((string)$region_slug) : null;
+        $resolvedCurrency = $regionConfig['currency'] ?? null;
+        $giftFinal = $variation->get_meta('_btl_gift_final_price');
+        $giftRegular = $variation->get_meta('_btl_gift_regular_price');
+        $codeFinal = $variation->get_meta('_btl_code_final_price');
+        $codeRegular = $variation->get_meta('_btl_code_regular_price');
+        $commissionDiscount = BTL_Price_Engine::priceValue($variation->get_meta('_btl_commission_discount')) ?? 0;
 
         return [
             // Internal resolver context used by CdKeyStock::codeStockCount.
@@ -1498,19 +1492,16 @@ final class BTL_GraphQL
                 return $ownImageId ? BTL_GraphQL::image_url($ownImageId) : '';
             })(),
             'attributes'            => BTL_GraphQL::attributes($variation),
-            'giftPriceToman'        => $manual_gift !== ''
-                ? $manual_gift
-                : ($variation->get_meta('giftPriceToman') ?: 'disabled'),
-            'codePriceToman'        => $manual_code !== ''
-                ? $manual_code
-                : ($variation->get_meta('codePriceToman') ?: 'disabled'),
-            'giftRegularPriceToman' => $manual_gift !== ''
-                ? $manual_gift
-                : ($variation->get_meta('giftRegularPriceToman') ?: 'disabled'),
-            'codeRegularPriceToman' => $manual_code !== ''
-                ? $manual_code
-                : ($variation->get_meta('codeRegularPriceToman') ?: 'disabled'),
-            'regionSlug'            => $region_slug,
+            'giftPrice'             => $giftFinal !== '' ? $giftFinal : 'disabled',
+            'codePrice'             => $codeFinal !== '' ? $codeFinal : 'disabled',
+            'giftRegularPrice'      => $giftRegular !== '' ? $giftRegular : 'disabled',
+            'codeRegularPrice'      => $codeRegular !== '' ? $codeRegular : 'disabled',
+            'regionSlug'            => $regionConfig['region'] ?? null,
+            'currency'              => $resolvedCurrency,
+            'currencySymbol'        => $regionConfig['symbol'] ?? null,
+            'gameDiscountPercent'   => (float)($variation->get_meta('_btl_game_discount') ?: 0),
+            'commissionDiscountPercent' => (float)$commissionDiscount,
+            'commissionDiscountBadge' => $commissionDiscount > 0,
         ];
     }
 

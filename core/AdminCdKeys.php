@@ -152,6 +152,20 @@ final class BTL_Admin_CdKeys
             },
         ]);
 
+        register_graphql_mutation('adminDeleteCdKey', [
+            'inputFields' => ['stockId' => ['type' => ['non_null' => 'Int']]],
+            'outputFields' => ['success' => ['type' => 'Boolean']],
+            'mutateAndGetPayload' => static function (array $input): array {
+                self::assertPermission('cdkeys.write');
+                $stockId = max(1, (int)$input['stockId']);
+                if (!BTL_CdKey_Stock::deleteUnused($stockId)) {
+                    throw new GraphQL\Error\UserError('فقط کلیدهای استفاده‌نشده و تخصیص‌نیافته قابل حذف هستند.');
+                }
+                BTL_Admin_Audit::record(get_current_user_id(), 'CD_KEY_DELETE', 'cdkey_stock', $stockId, 'success', []);
+                return ['success' => true];
+            },
+        ]);
+
         register_graphql_mutation('adminAssignCdKeys', [
             'inputFields' => [
                 'orderId' => ['type' => ['non_null' => 'Int']],

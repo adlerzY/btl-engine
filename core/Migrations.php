@@ -6,7 +6,7 @@ final class BTL_Migrations
     private const OPTION = 'btl_schema_version';
     private const ATTEMPT_OPTION = 'btl_schema_upgrade_attempt';
     private const RETRY_BACKOFF = 900;
-    private const VERSION = 12;
+    private const VERSION = 14;
 
     public static function boot(): void { add_action('init', [self::class, 'maybe_upgrade'], 4); }
     public static function maybe_upgrade(): void
@@ -40,6 +40,7 @@ final class BTL_Migrations
         }
         if($success && !self::backfill_cdkey_fingerprints())$success=false;
         if($success && !self::backfill_secure_cdkey_fingerprints())$success=false;
+        if($success && !self::migrate_pricing_model())$success=false;
         if(class_exists('BTL_Notifications')&&is_callable(['BTL_Notifications','maybe_add_type_column'])){
             try{BTL_Notifications::maybe_add_type_column();}catch(Throwable $e){$success=false;BTL_Helpers::logger('Migration: notification type column update failed');}
         }
@@ -52,6 +53,91 @@ final class BTL_Migrations
             if (class_exists('BTL_Otp')) { BTL_Otp::schedule_cleanup(); }
             if (class_exists('BTL_Login_Throttle')) { BTL_Login_Throttle::schedule_cleanup(); }
         }
+    }
+
+    private static function migrate_pricing_model(): bool
+    {
+        global $wpdb;
+        $report = [
+            'migrated' => 0,
+            'skipped' => 0,
+            'ambiguous' => 0,
+            'legacy_pending' => 0,
+            'settings_migrated' => false,
+            'at' => time(),
+        ];
+
+        $ids = $wpdb->get_col("SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key IN ('_gift_price_toman','_code_price_toman','gift_foreign_price_diff','code_foreign_price_diff') GROUP BY post_id");
+        foreach ($ids ?: [] as $id) {
+            $variation = wc_get_product((int)$id);
+            if (!$variation || !$variation->is_type('variation')) { $report['skipped']++; continue; }
+
+            $pending = [];
+            $existingPending = $variation->get_meta('_btl_pricing_legacy_pending');
+            if (is_array($existingPending)) $pending = $existingPending;
+            else $pending = array_filter(array_map('trim', explode(',', (string)$existingPending)));
+
+            foreach (['gift' => '_gift_price_toman', 'code' => '_code_price_toman'] as $method => $legacyKey) {
+                $newKey = $method === 'gift' ? '_btl_gift_price' : '_btl_code_price';
+                if ($variation->get_meta($newKey) !== '') { continue; }
+
+                $legacyToman = $variation->get_meta($legacyKey);
+                $foreignKey = $method === 'gift' ? 'gift_foreign_price_diff' : 'code_foreign_price_diff';
+                $legacyForeign = $variation->get_meta($foreignKey);
+                $foreignValue = BTL_Price_Engine::priceValue($legacyForeign);
+                $tomanValue = BTL_Price_Engine::priceValue($legacyToman);
+
+                // The legacy engine used the foreign field as an absolute foreign price.
+                // It is safe to migrate when that field exists and no manual Toman override exists.
+                if ($foreignValue !== null && ($legacyToman === '' || $tomanValue === null)) {
+                    $variation->update_meta_data($newKey, rtrim(rtrim(number_format($foreignValue, 8, '.', ''), '0'), '.'));
+                    $report['migrated']++;
+                    continue;
+                }
+
+                // A manual Toman price cannot be losslessly converted without the historical
+                // exchange rate. Preserve it explicitly as pending instead of guessing.
+                if ($tomanValue !== null) {
+                    $pending[] = $method;
+                    $report['ambiguous']++;
+                    continue;
+                }
+
+                if ($legacyToman === '' && $legacyForeign === '') {
+                    $report['skipped']++;
+                    continue;
+                }
+
+                $report['ambiguous']++;
+                $pending[] = $method;
+            }
+
+            $pending = array_values(array_unique(array_intersect(['gift', 'code'], $pending)));
+            $variation->update_meta_data('_btl_pricing_legacy_pending', implode(',', $pending));
+            if ($pending) $report['legacy_pending']++;
+            $variation->save_meta_data();
+        }
+
+        $old = get_option('site-settings', []);
+        $new = get_option('btl_pricing_settings', []);
+        if (!is_array($new)) $new = [];
+        $map = [
+            'btl_global_commission_percent' => 'btl_global_commission_percent',
+            'usd_to_toman_rate' => 'usd_manual_fallback_rate',
+            'eur_to_toman_rate' => 'eur_manual_fallback_rate',
+            'try_to_toman_rate' => 'try_manual_fallback_rate',
+            'uah_to_toman_rate' => 'uah_manual_fallback_rate',
+            'rate_sync_interval_hours' => 'rate_sync_interval_hours',
+        ];
+        if (is_array($old)) {
+            foreach ($map as $from => $to) {
+                if (!array_key_exists($to, $new) && array_key_exists($from, $old)) $new[$to] = $old[$from];
+            }
+        }
+        update_option('btl_pricing_settings', $new, false);
+        $report['settings_migrated'] = true;
+        update_option('btl_pricing_migration_report', $report, false);
+        return true;
     }
 
     private static function cleanup_legacy_wishlist(): bool

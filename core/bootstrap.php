@@ -33,6 +33,7 @@ function btl_autoload_core_class(string $class): void
         $map = [
             'BTL_Helpers' => 'Helpers.php',
             'BTL_Pricing_Fields' => 'PricingFields.php',
+            'BTL_Region_Registry' => 'RegionRegistry.php',
             'BTL_Cache' => 'Cache.php',
             'BTL_Invalidation' => 'Invalidation.php',
             'BTL_Price_Engine' => 'PriceEngine.php',
@@ -141,7 +142,7 @@ add_action('woocommerce_process_product_meta', ['BTL_Price_Engine', 'handle_prod
 add_action('woocommerce_save_product_variation', ['BTL_Price_Engine', 'handle_product_update'], 99);
 
 add_action('btl_sync_exchange_rates', ['BTL_Rate_Sync', 'run']);
-add_action('update_option_btl_rate_sync_interval', ['BTL_Rate_Sync', 'maybe_reschedule'], 10, 2);
+add_action('update_option_site-settings', ['BTL_Rate_Sync', 'maybe_reschedule'], 20, 2);
 
 add_filter('register_post_type_args', ['BTL_GraphQL', 'expose_support_ticket_type'], 10, 2);
 add_filter('graphql_post_object_connection_query_args', ['BTL_GraphQL', 'restrict_support_ticket_query'], 10, 5);

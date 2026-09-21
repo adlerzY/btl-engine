@@ -39,6 +39,7 @@ final class BTL_Scheduler
         add_action('acf/update_value', [self::class, 'capture_acf_change'], 5, 4);
         add_action('acf/save_post', [self::class, 'trigger_mass_update'], 20);
         add_action('update_option_site-settings', [self::class, 'on_site_settings_updated'], 10, 2);
+        add_action('update_option_btl_pricing_settings', [self::class, 'on_pricing_settings_updated'], 10, 2);
         add_action('jet-engine/options-pages/updated', [self::class, 'trigger_mass_update'], 10);
 
         add_action('btl_batch_step', [self::class, 'process_step'], 10, 2);
@@ -100,11 +101,32 @@ final class BTL_Scheduler
 
         self::$settingsDiffHandled = true;
 
-        if ($changed_currencies) {
+        $commissionChanged = BTL_Helpers::money($old['btl_global_commission_percent'] ?? 0)
+            !== BTL_Helpers::money($new['btl_global_commission_percent'] ?? 0);
+
+        if ($commissionChanged) {
+            self::schedule([]);
+        } elseif ($changed_currencies) {
             self::schedule($changed_currencies);
         }
         // Unrelated site-settings changes (for example sync interval) do not
         // alter computed product prices, so they must not trigger a full catalog pass.
+    }
+
+    public static function on_pricing_settings_updated($old_value, $new_value): void
+    {
+        $old = is_array($old_value) ? $old_value : [];
+        $new = is_array($new_value) ? $new_value : [];
+        if (BTL_Helpers::money($old['global_commission_percent'] ?? 0) !== BTL_Helpers::money($new['global_commission_percent'] ?? 0)) {
+            self::schedule([]);
+            return;
+        }
+        $fields = ['usd_manual_fallback_rate'=>'USD','eur_manual_fallback_rate'=>'EUR','try_manual_fallback_rate'=>'TRY','uah_manual_fallback_rate'=>'UAH'];
+        $changed = [];
+        foreach ($fields as $field => $currency) {
+            if (BTL_Helpers::money($old[$field] ?? 0) !== BTL_Helpers::money($new[$field] ?? 0)) $changed[] = $currency;
+        }
+        if ($changed) self::schedule($changed);
     }
 
     public static function trigger_mass_update($post_id = null): void
@@ -426,14 +448,24 @@ final class BTL_Scheduler
         global $wpdb;
 
         $currencies = self::normalize_currencies($currencies);
-
-        $where_currency = "pm.meta_value <> ''";
-        $args = [];
-
+        $regionValues = [];
+        foreach (BTL_Region_Registry::all() as $config) {
+            if (!$currencies || in_array($config['currency'], $currencies, true)) {
+                $regionValues = array_merge($regionValues, $config['aliases']);
+            }
+        }
+        $regionValues = array_values(array_unique($regionValues));
+        $regionKeys = ['attribute_pa_region_shop','attribute_region_shop','attribute_region','attribute_ریجن','attribute_pa_region','attribute_pa_ریجن'];
+        $keyPlaceholders = implode(',', array_fill(0, count($regionKeys), '%s'));
+        $valuePlaceholders = implode(',', array_fill(0, count($regionValues), '%s'));
+        $legacyPlaceholders = $currencies ? implode(',', array_fill(0, count($currencies), '%s')) : '';
+        $args = array_merge($regionKeys, $regionValues);
+        $metaPredicate = "(pm.meta_key IN ({$keyPlaceholders}) AND pm.meta_value IN ({$valuePlaceholders}))";
         if ($currencies) {
-            $placeholders = implode(',', array_fill(0, count($currencies), '%s'));
-            $where_currency = "pm.meta_value IN ({$placeholders})";
-            $args = $currencies;
+            $metaPredicate .= " OR (pm.meta_key = 'base_currency_type' AND pm.meta_value IN ({$legacyPlaceholders}))";
+            $args = array_merge($args, $currencies);
+        } else {
+            $metaPredicate .= " OR (pm.meta_key = 'base_currency_type' AND pm.meta_value <> '')";
         }
 
         $sql = "SELECT DISTINCT
@@ -450,8 +482,7 @@ final class BTL_Scheduler
                         p.post_type = 'product_variation'
                         AND parent.ID = p.post_parent
                     )
-                WHERE pm.meta_key = 'base_currency_type'
-                  AND {$where_currency}
+                WHERE ({$metaPredicate})
                   AND (
                         (p.post_type = 'product' AND p.post_status = 'publish')
                         OR

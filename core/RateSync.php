@@ -5,19 +5,15 @@ final class BTL_Rate_Sync
 {
     private const GROUP = 'btl';
     private const HOOK = 'btl_sync_exchange_rates';
-    private const OPTION_KEY = 'site-settings';
+    private const OPTION_KEY = 'btl_pricing_settings';
     private const LAST_SYNC_OPTION = 'btl_last_rate_sync';
+    private const LIVE_RATES_OPTION = 'btl_live_exchange_rates';
+    private const LAST_SUCCESSFUL_OPTION = 'btl_last_successful_exchange_rates';
+    private const STATUS_OPTION = 'btl_rate_engine_status';
     private const HEALTH_CHECK_OPTION = 'btl_rate_sync_last_health_check';
     private const HEALTH_CHECK_INTERVAL = 86400;
     private const DEFAULT_INTERVAL_HOURS = 6;
     private const MAX_DEVIATION_RATIO = 0.2;
-
-    private const CURRENCY_TO_FIELD = [
-        'USD' => 'usd_to_toman_rate',
-        'EUR' => 'eur_to_toman_rate',
-        'TRY' => 'try_to_toman_rate',
-        'UAH' => 'uah_to_toman_rate',
-    ];
 
     public static function boot(): void
     {
@@ -109,77 +105,104 @@ final class BTL_Rate_Sync
     public static function run(): void
     {
         $gateway = new BTL_Navasan_Rate_Gateway();
-        $rates = $gateway->fetchRates();
+        $result = $gateway->test();
+        self::store_status($result);
 
-        if (empty($rates)) {
-            BTL_Helpers::logger('RateSync: هیچ نرخی دریافت نشد — این دور رد شد.');
+        if (empty($result['healthy']) || empty($result['rates'])) {
+            BTL_Helpers::logger('RateSync: دریافت نرخ معتبر ناموفق بود (' . sanitize_key((string)($result['status'] ?? 'failed')) . ').');
             return;
         }
 
-        $settings = get_option(self::OPTION_KEY, []);
-        if (!is_array($settings)) {
-            $settings = [];
-        }
-
-        $changed = false;
+        $rates = $result['rates'];
+        $previous = get_option(self::LAST_SUCCESSFUL_OPTION, []);
+        $previousRates = is_array($previous) && isset($previous['rates']) && is_array($previous['rates'])
+            ? $previous['rates']
+            : [];
         $changedCurrencies = [];
+        $acceptedRates = [];
+        $rejectedCurrencies = [];
 
-        foreach (self::CURRENCY_TO_FIELD as $currency => $fieldSlug) {
-            if (!isset($rates[$currency])) {
-                continue;
-            }
-
-            $newValue = (float) $rates[$currency];
-            $oldValue = BTL_Helpers::money($settings[$fieldSlug] ?? 0);
+        foreach ($rates as $currency => $newValue) {
+            $newValue = (float) $newValue;
+            $oldValue = isset($previousRates[$currency]) ? (float) $previousRates[$currency] : 0.0;
 
             if ($oldValue > 0) {
                 $deviation = abs($newValue - $oldValue) / $oldValue;
 
                 if ($deviation > self::MAX_DEVIATION_RATIO) {
-                    BTL_Helpers::logger(sprintf(
-                        'RateSync: نرخ %s از %s به %s تغییر کرد (بیش از حد مجاز) — نادیده گرفته شد.',
-                        $currency,
-                        $oldValue,
-                        $newValue
-                    ));
+                    $rejectedCurrencies[] = strtoupper((string)$currency);
+                    BTL_Helpers::logger(sprintf('RateSync: نرخ %s به دلیل safety deviation رد شد.', $currency));
                     continue;
                 }
             }
 
-            $newValueString = (string) round($newValue);
-            $newNumericValue = (float) $newValueString;
-
-            if ($oldValue !== $newNumericValue) {
-                $settings[$fieldSlug] = $newValueString;
-                $changedCurrencies[] = $currency;
-                $changed = true;
-            }
+            $acceptedRates[$currency] = $newValue;
+            if ($oldValue !== $newValue) $changedCurrencies[] = $currency;
         }
 
-        update_option(
-            self::LAST_SYNC_OPTION,
-            current_time('mysql', true),
-            false
-        );
-
-        if (!$changed) {
+        if (!$acceptedRates) {
+            $failed = $result;
+            $failed['healthy'] = false;
+            $failed['status'] = 'deviation_rejected';
+            $failed['message'] = 'All returned rates were rejected by the safety guard.';
+            $failed['rejected'] = $rejectedCurrencies;
+            self::store_status($failed);
             return;
         }
 
-        /**
-         * update_option_site-settings is intentionally allowed to drive the
-         * scheduler. This prevents the rate sync from creating a second
-         * competing batch and keeps all settings changes on one scheduling path.
-         */
-        update_option(self::OPTION_KEY, $settings);
+        $previousTimes = is_array($previous) && is_array($previous['currency_fetched_at'] ?? null) ? $previous['currency_fetched_at'] : [];
+        $mergedRates = $previousRates;
+        $mergedTimes = $previousTimes;
+        foreach ($acceptedRates as $currency => $value) {
+            $mergedRates[$currency] = $value;
+            $mergedTimes[$currency] = time();
+        }
+        $record = ['rates' => $mergedRates, 'currency_fetched_at' => $mergedTimes, 'fetched_at' => time()];
+        update_option(self::LIVE_RATES_OPTION, $record, false);
+        update_option(self::LAST_SUCCESSFUL_OPTION, $record, false);
+        update_option(self::LAST_SYNC_OPTION, current_time('mysql', true), false);
+
+        $result['healthy'] = true;
+        $result['status'] = $rejectedCurrencies ? 'partial_success' : 'success';
+        $result['message'] = $rejectedCurrencies
+            ? 'Some rates were rejected by the safety deviation guard.'
+            : 'All returned rates were accepted.';
+        $result['rejected'] = $rejectedCurrencies;
+        self::store_status($result);
 
         wp_cache_delete('rates', 'btl');
         BTL_Price_Engine::clearMemoryRates();
 
+        if ($changedCurrencies) BTL_Scheduler::schedule($changedCurrencies);
+
         BTL_Helpers::logger(sprintf(
-            'RateSync: نرخ ارزها بروزرسانی شد (%s) — ارزهای تغییریافته: %s',
-            wp_json_encode($rates),
+            'RateSync: نرخ‌های معتبر ذخیره شدند — ارزهای تغییریافته: %s',
             implode(', ', $changedCurrencies)
         ));
+    }
+
+    public static function test_now(): array
+    {
+        $result = (new BTL_Navasan_Rate_Gateway())->test();
+        self::store_status($result);
+        return $result;
+    }
+
+    public static function status(): array
+    {
+        $status = get_option(self::STATUS_OPTION, []);
+        return is_array($status) ? $status : [];
+    }
+
+    private static function store_status(array $result): void
+    {
+        update_option(self::STATUS_OPTION, [
+            'healthy' => !empty($result['healthy']),
+            'status' => sanitize_key((string)($result['status'] ?? 'failed')),
+            'message' => sanitize_text_field((string)($result['message'] ?? '')),
+            'missing' => array_values(array_map('sanitize_key', (array)($result['missing'] ?? []))),
+            'rejected' => array_values(array_map('sanitize_key', (array)($result['rejected'] ?? []))),
+            'checked_at' => (int)($result['checked_at'] ?? time()),
+        ], false);
     }
 }

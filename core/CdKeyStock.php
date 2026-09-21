@@ -146,6 +146,16 @@ final class BTL_CdKey_Stock
         return (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM " . self::table() . " WHERE product_id=%d AND variation_id=%d AND status='available'", $productId, $variationId));
     }
 
+    public static function deleteUnused(int $stockId): bool
+    {
+        global $wpdb;
+        $row = $wpdb->get_row($wpdb->prepare("SELECT id,product_id,variation_id,status,order_id,item_id FROM " . self::table() . " WHERE id=%d LIMIT 1", $stockId));
+        if (!$row || !in_array((string)$row->status, ['available','duplicate','decrypt_failed','failed'], true) || $row->order_id || $row->item_id) return false;
+        $deleted = (int)$wpdb->delete(self::table(), ['id' => $stockId], ['%d']);
+        if ($deleted === 1) self::invalidateStockCache((int)$row->product_id, (int)$row->variation_id);
+        return $deleted === 1;
+    }
+
     /**
      * Batch-load available code-key counts for every variation of one product.
      * This keeps the product detail GraphQL resolver at one stock query instead

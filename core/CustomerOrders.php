@@ -138,7 +138,7 @@ final class BTL_Customer_Orders
         $productId = absint($li['productId'] ?? 0); $variationId = absint($li['variationId'] ?? 0); $quantity = (int)($li['quantity'] ?? 1);
         if ($productId < 1 || $quantity < 1 || $quantity > 99) throw new GraphQL\Error\UserError('محصول یا تعداد نامعتبر است.');
         $product = wc_get_product($variationId ?: $productId);
-        if (!$product || !$product->exists() || !$product->is_purchasable()) throw new GraphQL\Error\UserError('محصول انتخاب‌شده برای خرید در دسترس نیست.');
+        if (!$product || !$product->exists()) throw new GraphQL\Error\UserError('محصول انتخاب‌شده برای خرید در دسترس نیست.');
         if ($variationId > 0) {
             if (!$product instanceof WC_Product_Variation || (int)$product->get_parent_id() !== $productId) throw new GraphQL\Error\UserError('تنوع انتخاب‌شده متعلق به این محصول نیست.');
         } elseif ($product->is_type('variation')) throw new GraphQL\Error\UserError('تنوع محصول نامعتبر است.');
@@ -156,7 +156,8 @@ final class BTL_Customer_Orders
         if (!in_array($delivery, ['code','direct','gift'], true)) throw new GraphQL\Error\UserError('روش تحویل نامعتبر است.');
         if ($region !== '') {
             $actual = self::variationRegionValue($product);
-            if ($actual !== null && mb_strtolower(trim($actual)) !== mb_strtolower(trim($region))) throw new GraphQL\Error\UserError('ریجن انتخاب‌شده برای این محصول معتبر نیست.');
+            if ($actual !== null && !BTL_Region_Registry::matches($actual, $region)) throw new GraphQL\Error\UserError('ریجن انتخاب‌شده برای این محصول معتبر نیست.');
+            $region = BTL_Region_Registry::canonical($region) ?? $region;
         }
         if ($delivery === 'direct') {
             foreach (['email', 'password'] as $required) {
@@ -169,6 +170,7 @@ final class BTL_Customer_Orders
         }
         $unitPrice = BTL_Price_Engine::resolveDeliveryPrice($product, $delivery);
         if ($unitPrice === null || !is_numeric($unitPrice) || (float)$unitPrice < 0) throw new GraphQL\Error\UserError('قیمت این روش تحویل در دسترس نیست.');
+        if ($delivery === 'direct' && !$product->is_purchasable()) throw new GraphQL\Error\UserError('خرید مستقیم این محصول در دسترس نیست.');
         return compact('product','productId','variationId','quantity','delivery','region','credentials','publicMeta') + ['deliveryMethod'=>$delivery,'unitPrice'=>(float)$unitPrice];
     }
 

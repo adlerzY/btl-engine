@@ -12,8 +12,10 @@ final class BTL_Pricing_Fields
         'foreign_sale_price_dates_to',
         'gift_foreign_price_diff',
         'code_foreign_price_diff',
-        '_gift_price_toman',
-        '_code_price_toman',
+        '_btl_gift_price',
+        '_btl_code_price',
+        '_btl_game_discount',
+        '_btl_commission_discount',
     ];
 
     private const ACF_CONTENT_FIELDS = [
