@@ -51,7 +51,7 @@ final class BTL_Customer_Orders
     public static function register(): void
     {
         register_graphql_input_type('BtlOrderLineItemMetaInput', ['fields'=>['key'=>['type'=>['non_null'=>'String']], 'value'=>['type'=>['non_null'=>'String']]]]);
-        register_graphql_input_type('BtlOrderLineItemInput', ['fields'=>['productId'=>['type'=>['non_null'=>'Int']], 'variationId'=>['type'=>'Int'], 'quantity'=>['type'=>'Int'], 'metaData'=>['type'=>['list_of'=>'BtlOrderLineItemMetaInput']]]]);
+        register_graphql_input_type('BtlOrderLineItemInput', ['fields'=>['productId'=>['type'=>['non_null'=>'Int']], 'variationId'=>['type'=>'Int'], 'quantity'=>['type'=>'Int'], 'clientPrice'=>['type'=>'Float'], 'metaData'=>['type'=>['list_of'=>'BtlOrderLineItemMetaInput']]]]);
         register_graphql_object_type('BtlCustomerOrderResult', ['fields'=>['databaseId'=>['type'=>'Int'],'orderKey'=>['type'=>'String'],'orderNumber'=>['type'=>'String'],'total'=>['type'=>'String'],'status'=>['type'=>'String'],'paymentUrl'=>['type'=>'String']]]);
         register_graphql_mutation('submitCustomerOrder', [
             'inputFields'=>[
@@ -61,6 +61,37 @@ final class BTL_Customer_Orders
             ],
             'outputFields'=>['order'=>['type'=>'BtlCustomerOrderResult']],
             'mutateAndGetPayload'=>static fn($input) => self::submit((array)$input),
+        ]);
+
+        register_graphql_object_type('BtlCartRevalidationItem', [
+            'fields'=>[
+                'index'=>['type'=>'Int'],
+                'productId'=>['type'=>'Int'],
+                'variationId'=>['type'=>'Int'],
+                'quantity'=>['type'=>'Int'],
+                'deliveryMethod'=>['type'=>'String'],
+                'unitPrice'=>['type'=>'Float'],
+                'regularPrice'=>['type'=>'Float'],
+                'availableQuantity'=>['type'=>'Int'],
+                'status'=>['type'=>'String'],
+                'message'=>['type'=>'String'],
+            ],
+        ]);
+        register_graphql_object_type('BtlCartRevalidationResult', [
+            'fields'=>[
+                'valid'=>['type'=>'Boolean'],
+                'changed'=>['type'=>'Boolean'],
+                'code'=>['type'=>'String'],
+                'message'=>['type'=>'String'],
+                'items'=>['type'=>['list_of'=>'BtlCartRevalidationItem']],
+            ],
+        ]);
+        register_graphql_mutation('revalidateCustomerCart', [
+            'inputFields'=>[
+                'lineItems'=>['type'=>['non_null'=>['list_of'=>'BtlOrderLineItemInput']]],
+            ],
+            'outputFields'=>['result'=>['type'=>'BtlCartRevalidationResult']],
+            'mutateAndGetPayload'=>static fn($input) => ['result'=>self::revalidateCart((array)$input)],
         ]);
     }
 
@@ -171,7 +202,116 @@ final class BTL_Customer_Orders
         $unitPrice = BTL_Price_Engine::resolveDeliveryPrice($product, $delivery);
         if ($unitPrice === null || !is_numeric($unitPrice) || (float)$unitPrice < 0) throw new GraphQL\Error\UserError('قیمت این روش تحویل در دسترس نیست.');
         if ($delivery === 'direct' && !$product->is_purchasable()) throw new GraphQL\Error\UserError('خرید مستقیم این محصول در دسترس نیست.');
-        return compact('product','productId','variationId','quantity','delivery','region','credentials','publicMeta') + ['deliveryMethod'=>$delivery,'unitPrice'=>(float)$unitPrice];
+        $clientPrice = isset($li['clientPrice']) && is_numeric($li['clientPrice']) ? (float)$li['clientPrice'] : null;
+        return compact('product','productId','variationId','quantity','delivery','region','credentials','publicMeta','clientPrice') + ['deliveryMethod'=>$delivery,'unitPrice'=>(float)$unitPrice];
+    }
+
+    private static function revalidateCart(array $input): array
+    {
+        if (!is_user_logged_in()) {
+            throw new GraphQL\Error\UserError('برای بررسی سبد خرید باید وارد حساب کاربری شوید.');
+        }
+
+        $lineItems = $input['lineItems'] ?? [];
+        if (!is_array($lineItems) || !$lineItems || count($lineItems) > 50) {
+            throw new GraphQL\Error\UserError('سبد خرید شما نامعتبر است.');
+        }
+
+        $items = [];
+        $valid = true;
+        $changed = false;
+        $firstCode = 'CART_VALID';
+        $firstMessage = 'قیمت و موجودی سبد خرید به‌روز است.';
+
+        foreach ($lineItems as $index => $li) {
+            $productId = absint($li['productId'] ?? 0);
+            $variationId = absint($li['variationId'] ?? 0);
+            $quantity = (int)($li['quantity'] ?? 1);
+            $status = 'ok';
+            $message = '';
+            $unitPrice = null;
+            $regularPrice = null;
+            $availableQuantity = null;
+            $deliveryMethod = '';
+
+            try {
+                $line = self::validateLine((array)$li);
+                $unitPrice = (float)$line['unitPrice'];
+                $deliveryMethod = (string)$line['deliveryMethod'];
+                $product = $line['product'];
+
+                $regularPrice = $deliveryMethod === 'gift'
+                    ? BTL_Price_Engine::priceValue($product->get_meta('_btl_gift_regular_price'))
+                    : ($deliveryMethod === 'code'
+                        ? BTL_Price_Engine::priceValue($product->get_meta('_btl_code_regular_price'))
+                        : BTL_Price_Engine::priceValue($product->get_regular_price()));
+                if ($regularPrice === null) $regularPrice = $unitPrice;
+
+                if ($deliveryMethod === 'code') {
+                    $availableQuantity = BTL_CdKey_Stock::availableCount((int)$line['productId'], (int)$line['variationId']);
+                } elseif ($product->managing_stock()) {
+                    $stockQty = $product->get_stock_quantity();
+                    $availableQuantity = $stockQty === null ? null : max(0, (int)$stockQty);
+                }
+
+                if ($availableQuantity !== null && $availableQuantity < (int)$line['quantity']) {
+                    $status = 'out_of_stock';
+                    $message = $deliveryMethod === 'code'
+                        ? 'موجودی CD Key کافی نیست.'
+                        : 'موجودی این محصول کافی نیست.';
+                    $valid = false;
+                    $firstCode = 'OUT_OF_STOCK';
+                    $firstMessage = $message;
+                } elseif ($line['clientPrice'] !== null && abs((float)$line['clientPrice'] - $unitPrice) > 0.5) {
+                    $status = 'price_changed';
+                    $message = 'قیمت این آیتم به‌روزرسانی شده است.';
+                    $changed = true;
+                    $valid = false;
+                    if ($firstCode === 'CART_VALID') {
+                        $firstCode = 'PRICE_CHANGED';
+                        $firstMessage = 'قیمت یک یا چند آیتم در سبد به‌روزرسانی شده است.';
+                    }
+                }
+            } catch (GraphQL\Error\UserError $e) {
+                $status = 'unavailable';
+                $message = $e->getMessage();
+                $valid = false;
+                if ($firstCode === 'CART_VALID') {
+                    $firstCode = 'PRODUCT_UNAVAILABLE';
+                    $firstMessage = $message;
+                }
+            } catch (Throwable $e) {
+                $status = 'unavailable';
+                $message = 'بررسی این آیتم با خطا مواجه شد.';
+                $valid = false;
+                if ($firstCode === 'CART_VALID') {
+                    $firstCode = 'INTERNAL_ERROR';
+                    $firstMessage = $message;
+                }
+                BTL_Helpers::logger('CustomerOrders cart revalidation: ' . $e->getMessage());
+            }
+
+            $items[] = [
+                'index' => (int)$index,
+                'productId' => $productId,
+                'variationId' => $variationId,
+                'quantity' => $quantity,
+                'deliveryMethod' => $deliveryMethod,
+                'unitPrice' => $unitPrice,
+                'regularPrice' => $regularPrice,
+                'availableQuantity' => $availableQuantity,
+                'status' => $status,
+                'message' => $message,
+            ];
+        }
+
+        return [
+            'valid' => $valid,
+            'changed' => $changed,
+            'code' => $firstCode,
+            'message' => $firstMessage,
+            'items' => $items,
+        ];
     }
 
     private static function credential(string $type, string $value): string

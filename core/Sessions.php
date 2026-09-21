@@ -7,6 +7,7 @@ final class BTL_Sessions
 {
     private const REGISTER_SESSION_CANONICAL = 'mutation RegisterSession($sessionId:String!,$deviceLabel:String,$ipAddress:String,$userAgent:String){registerSession(input:{sessionId:$sessionId,deviceLabel:$deviceLabel,ipAddress:$ipAddress,userAgent:$userAgent}){success isStaff}}';
     private const TOUCH_SESSION_CANONICAL = 'mutation TouchSession($sessionId:String!){touchSession(input:{sessionId:$sessionId}){success}}';
+    private const REFRESH_TOKEN_CANONICAL = 'mutation RefreshToken($refreshToken:String!){refreshJwtAuthToken(input:{jwtRefreshToken:$refreshToken}){authToken}}';
     private const REVOKE_CURRENT_SESSION_CANONICAL = 'mutation RevokeCurrentSession{revokeCurrentSession{success}}';
     private const READY_OPTION = 'btl_sessions_table_ready_v2';
     private const SESSION_INACTIVITY_DAYS = 30;
@@ -378,6 +379,14 @@ final class BTL_Sessions
         if ($hasPreviousAuthorization) {
             $canonicalQuery = self::canonicalizeBootstrapMutation($query);
             if (hash_equals(self::TOUCH_SESSION_CANONICAL, $canonicalQuery)) {
+                return $requestData;
+            }
+
+            if (
+                isset($_SERVER['HTTP_X_BTL_SESSION_REFRESH'])
+                && $_SERVER['HTTP_X_BTL_SESSION_REFRESH'] === '1'
+                && hash_equals(self::REFRESH_TOKEN_CANONICAL, $canonicalQuery)
+            ) {
                 return $requestData;
             }
         }

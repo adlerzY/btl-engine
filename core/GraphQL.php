@@ -329,6 +329,66 @@ final class BTL_GraphQL
         BTL_GraphQL::register_user_fields();
         BTL_GraphQL::register_support_ticket_fields();
         BTL_GraphQL::register_review_fields();
+        BTL_GraphQL::register_admin_health_fields();
+    }
+
+    private static function register_admin_health_fields(): void
+    {
+        if (!btl_is_admin_graphql_request()) {
+            return;
+        }
+        register_graphql_object_type('BtlAdminPricingHealth', [
+            'fields' => [
+                'status' => ['type' => 'String'],
+                'apiConfigured' => ['type' => 'Boolean'],
+                'apiHealthy' => ['type' => 'Boolean'],
+                'apiStatus' => ['type' => 'String'],
+                'fallbackActive' => ['type' => 'Boolean'],
+                'availableRates' => ['type' => 'Int'],
+                'checkedAt' => ['type' => 'Int'],
+            ],
+        ]);
+
+        register_graphql_field('RootQuery', 'adminPricingHealth', [
+            'type' => 'BtlAdminPricingHealth',
+            'resolve' => static function () {
+                $adminPermissions = BTL_Admin_Permissions::get(get_current_user_id());
+                if (!is_user_logged_in() || !$adminPermissions) {
+                    throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
+                }
+
+                $status = BTL_Rate_Sync::status();
+                $rateStatus = BTL_Price_Engine::rateStatus();
+                $apiConfigured = defined('NAVASAN_API_KEY') && trim((string) NAVASAN_API_KEY) !== '';
+                $apiHealthy = !empty($status['healthy']);
+                $apiStatus = sanitize_key((string) ($status['status'] ?? 'not_tested'));
+                $sources = array_map(static fn($value) => is_array($value) ? (string)($value['source'] ?? 'unavailable') : 'unavailable', $rateStatus);
+                $fallbackActive = in_array('manual_fallback', $sources, true) || in_array('last_successful', $sources, true);
+                $availableRates = count(array_filter($rateStatus, static fn($value) => is_array($value) && isset($value['rate']) && $value['rate'] !== null));
+
+                if (!$apiConfigured) {
+                    $displayStatus = 'manual';
+                } elseif ($apiHealthy && $availableRates >= 4) {
+                    $displayStatus = 'healthy';
+                } elseif ($apiHealthy) {
+                    $displayStatus = 'partial';
+                } elseif ($fallbackActive) {
+                    $displayStatus = 'fallback';
+                } else {
+                    $displayStatus = 'failed';
+                }
+
+                return [
+                    'status' => $displayStatus,
+                    'apiConfigured' => $apiConfigured,
+                    'apiHealthy' => $apiHealthy,
+                    'apiStatus' => $apiStatus,
+                    'fallbackActive' => $fallbackActive,
+                    'availableRates' => $availableRates,
+                    'checkedAt' => (int)($status['checked_at'] ?? 0),
+                ];
+            },
+        ]);
     }
 
     private static function register_region_fields(): void
