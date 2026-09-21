@@ -50,11 +50,8 @@ function btl_autoload_core_class(string $class): void
             'BTL_Admin_Audit' => 'AdminAudit.php',
             'BTL_Admin_Orders' => 'AdminOrders.php',
             'BTL_Admin_Tickets' => 'AdminTickets.php',
-            'BTL_Admin_Customers' => 'AdminCustomers.php',
             'BTL_Admin_Reviews' => 'AdminReviews.php',
             'BTL_Admin_Notifications' => 'AdminNotifications.php',
-            'BTL_Gold_Market' => 'GoldMarket.php',
-            'BTL_Admin_Gold' => 'AdminGold.php',
             'BTL_Admin_CdKeys' => 'AdminCdKeys.php',
             'BTL_Secure_Vault' => 'SecureVault.php',
             'BTL_Secure_Fields' => 'SecureFields.php',
@@ -209,9 +206,8 @@ add_action('btl_checkout_recovery', ['BTL_Customer_Orders', 'recoverStaleRequest
 add_action('graphql_register_types', ['BTL_Customer_Orders', 'register'], 10);
 add_action('transition_post_status', ['BTL_Blog_Follow', 'on_status_change'], 10, 3);
 add_action('graphql_register_types', ['BTL_Blog_Follow', 'register'], 20);
-// Blog ratings and Gold/user GraphQL are loaded only when GraphQL schema registration actually runs.
+// Blog ratings GraphQL is loaded only when GraphQL schema registration actually runs.
 add_action('graphql_register_types', ['BTL_Post_Ratings', 'register'], 10);
-// Gold storefront GraphQL is currently registered by its actual GraphQL owner when needed.
 add_action('graphql_register_types', ['BTL_Admin_Totp', 'register'], 10);
 add_action('graphql_register_types', ['BTL_Admin_Sms_Auth', 'register'], 10);
 add_action('graphql_register_types', ['BTL_Phone_Auth', 'register'], 10);
@@ -224,9 +220,7 @@ if (btl_is_admin_graphql_request()) {
     add_action('graphql_register_types', ['BTL_Admin_Permissions', 'register_graphql'], 11);
     add_action('graphql_register_types', ['BTL_Admin_Orders', 'register'], 12);
     add_action('graphql_register_types', ['BTL_Admin_Tickets', 'register'], 12);
-    add_action('graphql_register_types', ['BTL_Admin_Customers', 'register'], 12);
     add_action('graphql_register_types', ['BTL_Admin_Reviews', 'register'], 12);
     add_action('graphql_register_types', ['BTL_Admin_Notifications', 'register'], 12);
-    add_action('graphql_register_types', ['BTL_Admin_Gold', 'register'], 13);
     add_action('graphql_register_types', ['BTL_Admin_CdKeys', 'register'], 13);
 }

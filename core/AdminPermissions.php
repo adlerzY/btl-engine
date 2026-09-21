@@ -12,12 +12,7 @@ final class BTL_Admin_Permissions
         'orders.read', 'orders.write', 'orders.fulfill',
         'tickets.read', 'tickets.write', 'tickets.claim',
         'reviews.moderate',
-        'users.read', 'users.write', 'users.verify',
         'cdkeys.read', 'cdkeys.write', 'cdkeys.reveal',
-        'gold.read', 'gold.write', 'gold.claim', 'gold.payout',
-        'pricing.read', 'pricing.write',
-        'engine.scheduler', 'engine.rates', 'engine.revalidation',
-        'settings.manage', 'audit.read',
     ];
 
     public static function boot(): void
