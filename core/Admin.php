@@ -36,37 +36,37 @@ final class BTL_Admin
             $symbol = $region['symbol'] ?? '';
             $rateSource = BTL_Price_Engine::rateSource((string)($region['currency'] ?? ''));
 
-            woocommerce_wp_text_input([
+            self::render_text_field([
                 'id' => "base_foreign_price[$loop]",
                 'label' => sprintf('Base Foreign Price (%s %s)', $currency, $symbol),
                 'value' => (string) get_post_meta($variation->get_id(), 'base_foreign_price', true),
                 'wrapper_class' => 'form-row form-row-full',
-                'description' => sprintf('Direct rate source: %s', esc_html($rateSource)),
+                'description' => sprintf('Direct rate source: %s', $rateSource),
                 'desc_tip' => true,
             ]);
 
-            woocommerce_wp_text_input([
+            self::render_text_field([
                 'id' => "_btl_gift_price[$loop]",
                 'label' => sprintf('Gift Price (%s %s)', $currency, $symbol),
                 'value' => (string) get_post_meta($variation->get_id(), '_btl_gift_price', true),
-                'wrapper_class' => 'form-row form-row-first'
+                'wrapper_class' => 'form-row form-row-first',
             ]);
 
-            woocommerce_wp_text_input([
+            self::render_text_field([
                 'id' => "_btl_code_price[$loop]",
                 'label' => sprintf('Code Price (%s %s)', $currency, $symbol),
                 'value' => (string) get_post_meta($variation->get_id(), '_btl_code_price', true),
-                'wrapper_class' => 'form-row form-row-last'
+                'wrapper_class' => 'form-row form-row-last',
             ]);
 
-            woocommerce_wp_text_input([
+            self::render_text_field([
                 'id' => "_btl_game_discount[$loop]",
                 'label' => 'Game Discount (%)',
                 'value' => (string) get_post_meta($variation->get_id(), '_btl_game_discount', true),
-                'wrapper_class' => 'form-row form-row-first'
+                'wrapper_class' => 'form-row form-row-first',
             ]);
 
-            woocommerce_wp_text_input([
+            self::render_text_field([
                 'id' => "_btl_commission_discount[$loop]",
                 'label' => 'Commission Discount (%)',
                 'value' => (string) get_post_meta($variation->get_id(), '_btl_commission_discount', true),
@@ -137,6 +137,39 @@ final class BTL_Admin
                 BTL_Invalidation::SCOPE_PRICING
             );
         }
+    }
+
+    private static function render_text_field(array $args): void
+    {
+        $id = (string) ($args['id'] ?? '');
+        $label = (string) ($args['label'] ?? '');
+        $value = (string) ($args['value'] ?? '');
+        $wrapperClass = trim((string) ($args['wrapper_class'] ?? ''));
+        $description = (string) ($args['description'] ?? '');
+        $descTip = !empty($args['desc_tip']);
+
+        if ($id === '') {
+            return;
+        }
+
+        $fieldId = preg_replace('/[^A-Za-z0-9_:\-\[\]]+/', '', $id);
+        $fieldId = $fieldId !== '' ? $fieldId : 'btl_field';
+        $classes = trim('short ' . (string) ($args['class'] ?? ''));
+        ?>
+        <p class="form-field <?php echo esc_attr($fieldId); ?>_field <?php echo esc_attr($wrapperClass); ?>">
+            <label for="<?php echo esc_attr($fieldId); ?>"><?php echo esc_html($label); ?></label>
+            <input
+                type="text"
+                class="<?php echo esc_attr($classes); ?>"
+                name="<?php echo esc_attr($id); ?>"
+                id="<?php echo esc_attr($fieldId); ?>"
+                value="<?php echo esc_attr($value); ?>"
+            />
+            <?php if ($description !== ''): ?>
+                <span class="description"<?php echo $descTip ? ' style="display:block; margin-top:4px;"' : ''; ?>><?php echo esc_html($description); ?></span>
+            <?php endif; ?>
+        </p>
+        <?php
     }
 
     private static function sanitize($value): string
