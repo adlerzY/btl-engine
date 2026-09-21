@@ -26,6 +26,10 @@ final class BTL_Admin
 
     public static function fields($loop, $variation_data, $variation): void
     {
+        if ($variation instanceof WP_Post) {
+            $variation = wc_get_product($variation->ID);
+        }
+
         if (!$variation instanceof WC_Product_Variation) {
             return;
         }
