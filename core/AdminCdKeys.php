@@ -5,6 +5,7 @@ final class BTL_Admin_CdKeys
 {
     private const MAX_PAGE = 50;
     private const MAX_IMPORT = 500;
+    private const MAX_IMPORT_BYTES = 1048576;
     private const MAX_ASSIGN = 50;
 
     public static function boot(): void
@@ -120,7 +121,11 @@ final class BTL_Admin_CdKeys
                 self::assertPermission('cdkeys.write');
                 [$productId, $variationId] = self::validateVariation((int)$input['productId'], (int)$input['variationId']);
 
-                $lines = preg_split('/\R/u', (string)$input['keys']) ?: [];
+                $rawKeys = (string)$input['keys'];
+                if ($rawKeys === '' || strlen($rawKeys) > self::MAX_IMPORT_BYTES) {
+                    throw new GraphQL\Error\UserError('حجم ورودی CD Key بیش از حد مجاز است.');
+                }
+                $lines = preg_split('/\R/u', $rawKeys) ?: [];
                 $keys = [];
                 foreach ($lines as $line) {
                     $key = trim((string)$line);
@@ -187,44 +192,50 @@ final class BTL_Admin_CdKeys
                 $item = self::validateCodeItem($orderId, $itemId, true);
                 $order = wc_get_order($orderId);
                 if (!$order) throw new GraphQL\Error\UserError('سفارش یافت نشد.');
+                $lock = BTL_CdKey_Stock::acquireOrderItemLock($orderId, $itemId);
+                if (!$lock) throw new GraphQL\Error\UserError('آیتم هم‌زمان توسط کاربر دیگری در حال تخصیص است.');
 
-                $quantity = max(1, (int)$item->get_quantity());
-                $before = BTL_Secure_Fields::countByOrderItem($orderId, $itemId, 'cdkey');
-                $remaining = max(0, $quantity - $before);
-                if ($remaining === 0) throw new GraphQL\Error\UserError('تمام CD Keyهای این آیتم قبلاً تخصیص داده شده‌اند.');
+                try {
+                    $quantity = max(1, (int)$item->get_quantity());
+                    $before = BTL_Secure_Fields::countByOrderItem($orderId, $itemId, 'cdkey');
+                    $reserved = BTL_CdKey_Stock::reservedCountForItem($orderId, $itemId);
+                    $remaining = max(0, $quantity - $before - $reserved);
+                    if ($remaining === 0) throw new GraphQL\Error\UserError('تمام CD Keyهای این آیتم قبلاً تخصیص داده شده‌اند.');
 
-                $product = $item->get_product();
-                $variationId = (int)$item->get_variation_id();
-                $productId = $variationId ? (int)($product ? $product->get_parent_id() : 0) : (int)$item->get_product_id();
-                if ($productId < 1) throw new GraphQL\Error\UserError('محصول آیتم قابل شناسایی نیست.');
+                    $product = $item->get_product();
+                    $variationId = (int)$item->get_variation_id();
+                    $productId = $variationId ? (int)($product ? $product->get_parent_id() : 0) : (int)$item->get_product_id();
+                    if ($productId < 1) throw new GraphQL\Error\UserError('محصول آیتم قابل شناسایی نیست.');
 
-                $assignTarget = min($requested, $remaining, BTL_CdKey_Stock::availableCount($productId, $variationId));
-                if ($assignTarget < 1) throw new GraphQL\Error\UserError('برای این آیتم CD Key قابل تخصیص در موجودی موجود نیست.');
+                    $assignTarget = min($requested, $remaining, BTL_CdKey_Stock::availableCount($productId, $variationId));
+                    if ($assignTarget < 1) throw new GraphQL\Error\UserError('برای این آیتم CD Key قابل تخصیص در موجودی موجود نیست.');
 
-                if (!BTL_CdKey_Stock::reserveForItem($productId, $variationId, $orderId, $itemId, $assignTarget)) {
-                    throw new GraphQL\Error\UserError('رزرو CD Key انجام نشد. دوباره تلاش کنید.');
-                }
+                    $reservation = BTL_CdKey_Stock::reserveForItemWithToken($productId, $variationId, $orderId, $itemId, $assignTarget);
+                    if (!$reservation['token']) throw new GraphQL\Error\UserError('رزرو CD Key انجام نشد. دوباره تلاش کنید.');
 
-                $newlyAssigned = BTL_CdKey_Stock::assignReservedForItem($orderId, $itemId);
-                $delivered = BTL_Secure_Fields::countByOrderItem($orderId, $itemId, 'cdkey');
-                $remainingAfter = max(0, $quantity - $delivered);
-                $status = $delivered >= $quantity ? 'completed' : ($delivered > 0 ? 'processing' : 'queued');
+                    $newlyAssigned = BTL_CdKey_Stock::assignReservedForItem($orderId, $itemId, $reservation['token'], $assignTarget);
+                    $delivered = BTL_Secure_Fields::countByOrderItem($orderId, $itemId, 'cdkey');
+                    $remainingAfter = max(0, $quantity - $delivered);
+                    $status = $delivered >= $quantity ? 'completed' : ($delivered > 0 ? 'processing' : 'queued');
 
-                BTL_Admin_Audit::record(get_current_user_id(), 'CD_KEY_ASSIGN', 'order_item', $itemId, 'success', [
+                    BTL_Admin_Audit::record(get_current_user_id(), 'CD_KEY_ASSIGN', 'order_item', $itemId, 'success', [
                     'order_id' => $orderId,
                     'requested' => $requested,
                     'assigned' => $newlyAssigned,
                     'delivered' => $delivered,
                     'remaining' => $remainingAfter,
-                ]);
+                    ]);
 
-                return [
+                    return [
                     'success' => $newlyAssigned > 0,
                     'assigned' => $newlyAssigned,
                     'deliveredQuantity' => $delivered,
                     'remainingQuantity' => $remainingAfter,
                     'fulfillmentStatus' => $status,
-                ];
+                    ];
+                } finally {
+                    BTL_CdKey_Stock::releaseOrderItemLock($lock);
+                }
             },
         ]);
 
@@ -273,7 +284,7 @@ final class BTL_Admin_CdKeys
                 self::assertPermission('cdkeys.reveal');
                 $orderId = (int)$input['orderId'];
                 $itemId = (int)$input['itemId'];
-                self::validateCodeItem($orderId, $itemId, false);
+                self::validateCodeItem($orderId, $itemId, true);
                 $values = BTL_Secure_Fields::revealAllForStaffCdKey($orderId, $itemId, get_current_user_id());
                 BTL_Admin_Audit::record(get_current_user_id(), 'CD_KEY_REVEAL', 'order_item', $itemId, 'success', ['order_id' => $orderId, 'count' => count($values)]);
                 return ['values' => $values];

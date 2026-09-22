@@ -176,19 +176,70 @@ final class BTL_Helpers
 
     public static function clientIp(): string
     {
-        $xff = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
+        $remote = self::validIp($_SERVER['REMOTE_ADDR'] ?? '');
+        $trustedProxy = false;
 
-        if ($xff) {
-            $parts = explode(
-                ',',
-                $xff
-            );
-
-            return trim($parts[0]);
+        $configuredRanges = getenv('BTL_TRUSTED_PROXY_RANGES');
+        $ranges = $configuredRanges !== false && trim($configuredRanges) !== ''
+            ? array_values(array_filter(array_map('trim', explode(',', $configuredRanges))))
+            : ['127.0.0.1/32', '::1/128'];
+        $ranges = apply_filters('btl_trusted_proxy_ranges', $ranges);
+        foreach ((array) $ranges as $range) {
+            if (self::ipInCidr($remote, (string) $range)) {
+                $trustedProxy = true;
+                break;
+            }
         }
 
-        return sanitize_text_field(
-            $_SERVER['REMOTE_ADDR'] ?? ''
-        );
+        if ($trustedProxy && getenv('BTL_TRUST_PROXY_HEADERS') === 'true') {
+            $cloudflareIp = self::validIp($_SERVER['HTTP_CF_CONNECTING_IP'] ?? '');
+            if ($cloudflareIp) return $cloudflareIp;
+
+            if (getenv('BTL_USE_X_FORWARDED_FOR') === 'true') {
+                foreach (explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '')) as $candidate) {
+                    $ip = self::validIp($candidate);
+                    if ($ip) return $ip;
+                }
+            }
+        }
+
+        return $remote ?: 'unknown';
+    }
+
+    private static function validIp($value): ?string
+    {
+        $value = trim((string) $value);
+        return filter_var($value, FILTER_VALIDATE_IP) ? $value : null;
+    }
+
+    private static function ipInCidr(?string $ip, string $cidr): bool
+    {
+        if (!$ip) return false;
+        $parts = explode('/', trim($cidr), 2);
+        $network = self::validIp($parts[0] ?? '');
+        if (!$network) return false;
+        if (!isset($parts[1])) return $ip === $network;
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && filter_var($network, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $prefix = (int) $parts[1];
+            if ($prefix < 0 || $prefix > 32) return false;
+            $ipLong = ip2long($ip);
+            $networkLong = ip2long($network);
+            $mask = $prefix === 0 ? 0 : (-1 << (32 - $prefix));
+            return (($ipLong & $mask) === ($networkLong & $mask));
+        }
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) && filter_var($network, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+            $prefix = (int) $parts[1];
+            if ($prefix < 0 || $prefix > 128) return false;
+            $ipBin = inet_pton($ip);
+            $networkBin = inet_pton($network);
+            if ($ipBin === false || $networkBin === false) return false;
+            $fullBytes = intdiv($prefix, 8);
+            $remaining = $prefix % 8;
+            if ($fullBytes && substr($ipBin, 0, $fullBytes) !== substr($networkBin, 0, $fullBytes)) return false;
+            if ($remaining === 0) return true;
+            $mask = chr((0xFF << (8 - $remaining)) & 0xFF);
+            return (ord($ipBin[$fullBytes]) & ord($mask)) === (ord($networkBin[$fullBytes]) & ord($mask));
+        }
+        return false;
     }
 }

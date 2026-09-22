@@ -235,11 +235,45 @@ final class BTL_CdKey_Stock
 
     public static function reserveForItem(int $productId, int $variationId, int $orderId, int $itemId, int $quantity): array
     {
+        $reservation = self::reserveForItemWithToken($productId, $variationId, $orderId, $itemId, $quantity);
+        return $reservation['ids'];
+    }
+
+    public static function reserveForItemWithToken(int $productId, int $variationId, int $orderId, int $itemId, int $quantity): array
+    {
         $token = wp_generate_password(40, false, false);
         $ok = self::reserveForOrder($orderId, [['product_id'=>$productId,'variation_id'=>$variationId,'item_id'=>$itemId,'quantity'=>$quantity]], $token);
-        if (!$ok) return [];
+        if (!$ok) return ['token' => '', 'ids' => []];
         global $wpdb;
-        return array_map('intval', $wpdb->get_col($wpdb->prepare("SELECT id FROM " . self::table() . " WHERE reservation_token=%s AND order_id=%d AND item_id=%d AND status='reserved'", $token, $orderId, $itemId)));
+        return [
+            'token' => $token,
+            'ids' => array_map('intval', $wpdb->get_col($wpdb->prepare("SELECT id FROM " . self::table() . " WHERE reservation_token=%s AND order_id=%d AND item_id=%d AND status='reserved'", $token, $orderId, $itemId))),
+        ];
+    }
+
+    public static function reservedCountForItem(int $orderId, int $itemId): int
+    {
+        global $wpdb;
+        return (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM " . self::table() . " WHERE order_id=%d AND item_id=%d AND status='reserved'",
+            $orderId,
+            $itemId
+        ));
+    }
+
+    public static function acquireOrderItemLock(int $orderId, int $itemId): ?string
+    {
+        global $wpdb;
+        if ($orderId < 1 || $itemId < 1) return null;
+        $name = 'btl_cdkey_item_' . $orderId . '_' . $itemId;
+        $ok = (int) $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 5)', $name));
+        return $ok === 1 ? $name : null;
+    }
+
+    public static function releaseOrderItemLock(?string $name): void
+    {
+        global $wpdb;
+        if ($name) $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $name));
     }
 
     public static function releaseReservedForOrder(int $orderId, ?string $token = null): int
@@ -253,10 +287,17 @@ final class BTL_CdKey_Stock
         return $updated;
     }
 
-    public static function assignReservedForItem(int $orderId, int $itemId): int
+    public static function assignReservedForItem(int $orderId, int $itemId, ?string $reservationToken = null, ?int $max = null): int
     {
         global $wpdb;
-        $ids = array_map('intval', $wpdb->get_col($wpdb->prepare("SELECT id FROM " . self::table() . " WHERE order_id=%d AND item_id=%d AND status IN ('reserved','used') ORDER BY id ASC", $orderId, $itemId)));
+        $where = "order_id=%d AND item_id=%d AND status IN ('reserved','used')";
+        $args = [$orderId, $itemId];
+        if ($reservationToken !== null) {
+            $where .= ' AND reservation_token=%s';
+            $args[] = $reservationToken;
+        }
+        $limit = $max !== null ? ' LIMIT ' . max(1, (int)$max) : '';
+        $ids = array_map('intval', $wpdb->get_col($wpdb->prepare("SELECT id FROM " . self::table() . " WHERE {$where} ORDER BY id ASC{$limit}", $args)));
         $assigned = 0;
         foreach ($ids as $id) {
             $wpdb->query('START TRANSACTION');

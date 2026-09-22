@@ -37,6 +37,7 @@ final class BTL_Blog_Comments
 
                 $content = wp_kses_post(trim($input['content']));
                 if ($content === '') throw new GraphQL\Error\UserError('متن نظر خالی است.');
+                if (strlen($content) > 5000) throw new GraphQL\Error\UserError('متن نظر بیش از حد مجاز است.');
 
                 $isStaff = current_user_can('manage_woocommerce');
 
@@ -80,6 +81,7 @@ final class BTL_Blog_Comments
 
                 $content = wp_kses_post(trim($input['content']));
                 if ($content === '') throw new GraphQL\Error\UserError('متن پاسخ خالی است.');
+                if (strlen($content) > 5000) throw new GraphQL\Error\UserError('متن پاسخ بیش از حد مجاز است.');
 
                 $currentUserId = get_current_user_id();
                 $isStaff = current_user_can('manage_woocommerce');

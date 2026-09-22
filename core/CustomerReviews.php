@@ -238,6 +238,9 @@ final class BTL_Customer_Reviews
                 if ($content === '') {
                     throw new GraphQL\Error\UserError('متن نظر خالی است.');
                 }
+                if (strlen($content) > 1000) {
+                    throw new GraphQL\Error\UserError('متن نظر بیش از حد مجاز است.');
+                }
 
                 wp_update_comment([
                     'comment_ID' => $comment->comment_ID,

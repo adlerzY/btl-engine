@@ -49,7 +49,9 @@ final class BTL_Order_Security_Hooks
 
     public static function wipe_on_terminal_status($orderId, $oldStatus, $newStatus, $order): void
     {
-        $terminalStatuses = ['completed', 'cancelled', 'failed', 'refunded', 'expired', 'trash'];
+        // Payment completion is not fulfillment completion. Direct/gift credentials
+        // must remain available until the fulfillment state is explicitly completed.
+        $terminalStatuses = ['cancelled', 'failed', 'refunded', 'expired', 'trash'];
         if (!in_array($newStatus, $terminalStatuses, true)) return;
 
         $deleted = BTL_Secure_Fields::wipeCredentialsByOrder((int)$orderId);

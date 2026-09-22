@@ -31,6 +31,14 @@ final class BTL_Admin_Totp
         return !empty($secret);
     }
 
+    public static function isSmsFallbackAllowed(int $userId): bool
+    {
+        // SMS is an explicit, pre-enrolled fallback only. Never let a login
+        // ticket enroll or choose a new second-factor destination.
+        return (bool) get_user_meta($userId, 'btl_admin_sms_enabled', true)
+            && (string) get_user_meta($userId, 'btl_phone', true) !== '';
+    }
+
     public static function resolvePendingUserId(string $ticket): int
     {
         return self::resolveTicket($ticket);

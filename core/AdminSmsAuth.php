@@ -31,6 +31,9 @@ final class BTL_Admin_Sms_Auth
                 return self::safeExecute(function () use ($input) {
                     $ticket = $input['pendingTicket'];
                     $userId = BTL_Admin_Totp::resolvePendingUserId($ticket);
+                    if (!BTL_Admin_Totp::isSmsFallbackAllowed($userId)) {
+                        throw new GraphQL\Error\UserError('برای این حساب، ورود پیامکی فعال نیست.');
+                    }
                     $storedPhone = get_user_meta($userId, self::PHONE_META, true);
 
                     if ($storedPhone) {
@@ -47,8 +50,7 @@ final class BTL_Admin_Sms_Auth
                                 'cooldownSeconds' => 0,
                             ];
                         }
-
-                        set_transient(self::PENDING_PHONE_PREFIX . $ticket, $phone, self::PENDING_PHONE_TTL);
+                        throw new GraphQL\Error\UserError('شماره ورود پیامکی باید از قبل برای حساب ثبت و تأیید شده باشد.');
                     }
 
                     $ip = BTL_Helpers::clientIp();
@@ -81,20 +83,18 @@ final class BTL_Admin_Sms_Auth
                 return self::safeExecute(function () use ($input) {
                     $ticket = $input['pendingTicket'];
                     $userId = BTL_Admin_Totp::resolvePendingUserId($ticket);
+                    if (!BTL_Admin_Totp::isSmsFallbackAllowed($userId)) {
+                        throw new GraphQL\Error\UserError('برای این حساب، ورود پیامکی فعال نیست.');
+                    }
 
                     $storedPhone = get_user_meta($userId, self::PHONE_META, true);
-                    $phone = $storedPhone ?: get_transient(self::PENDING_PHONE_PREFIX . $ticket);
+                    $phone = $storedPhone;
 
                     if (!$phone) {
                         throw new GraphQL\Error\UserError('نشست منقضی شده، دوباره درخواست کد دهید.');
                     }
 
                     BTL_Otp::verify($phone, self::PURPOSE, sanitize_text_field($input['code']));
-
-                    if (!$storedPhone) {
-                        update_user_meta($userId, self::PHONE_META, $phone);
-                        delete_transient(self::PENDING_PHONE_PREFIX . $ticket);
-                    }
 
                     BTL_Admin_Totp::clearPendingTicket($ticket);
 

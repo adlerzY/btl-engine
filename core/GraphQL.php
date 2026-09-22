@@ -10,7 +10,7 @@ final class BTL_GraphQL
     {
         $ownerId = (int) get_post_meta($ticketId, 'customer_id', true);
         $currentUserId = get_current_user_id();
-        if ($ownerId < 1 || ($ownerId !== $currentUserId && !current_user_can('manage_woocommerce'))) {
+        if ($ownerId < 1 || ($ownerId !== $currentUserId && !BTL_Admin_Permissions::can($currentUserId, 'tickets.read'))) {
             throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
         }
     }
@@ -47,7 +47,7 @@ final class BTL_GraphQL
                 return $query_args;
             }
 
-            if (!user_can($userId, 'manage_woocommerce')) {
+            if (!BTL_Admin_Permissions::can($userId, 'tickets.read')) {
                 $query_args['meta_query'] = [[
                     'key' => 'customer_id',
                     'value' => $userId,
@@ -329,7 +329,49 @@ final class BTL_GraphQL
         BTL_GraphQL::register_user_fields();
         BTL_GraphQL::register_support_ticket_fields();
         BTL_GraphQL::register_review_fields();
+        BTL_GraphQL::register_site_maintenance_fields();
         BTL_GraphQL::register_admin_health_fields();
+    }
+
+    private static function register_site_maintenance_fields(): void
+    {
+        register_graphql_field('RootQuery', 'siteMaintenanceMode', [
+            'type' => 'Boolean',
+            'resolve' => static function (): bool {
+                return (bool) get_option('btl_site_maintenance_mode', false);
+            },
+        ]);
+
+        if (!btl_is_admin_graphql_request()) {
+            return;
+        }
+
+        register_graphql_mutation('setSiteMaintenanceMode', [
+            'inputFields' => [
+                'enabled' => [
+                    'type' => 'Boolean',
+                    'description' => 'فعال/غیرفعال کردن حالت تعمیرات سایت.',
+                ],
+            ],
+            'outputFields' => [
+                'success' => ['type' => 'Boolean'],
+                'enabled' => ['type' => 'Boolean'],
+            ],
+            'mutateAndGetPayload' => static function ($input): array {
+                $adminPermissions = BTL_Admin_Permissions::get(get_current_user_id());
+                if (!is_user_logged_in() || !$adminPermissions) {
+                    throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
+                }
+
+                $enabled = !empty($input['enabled']);
+                update_option('btl_site_maintenance_mode', $enabled, false);
+
+                return [
+                    'success' => true,
+                    'enabled' => $enabled,
+                ];
+            },
+        ]);
     }
 
     private static function register_admin_health_fields(): void
@@ -978,6 +1020,9 @@ final class BTL_GraphQL
                 }
 
                 $userId = get_current_user_id();
+                if (str_starts_with($avatarId, 'admin/') && !BTL_Admin_Permissions::can($userId, 'cdkeys.reveal')) {
+                    throw new GraphQL\Error\UserError('این آواتار فقط برای کارکنان مجاز است.');
+                }
 
                 update_user_meta($userId, 'btl_avatar_url', $avatarId);
 
@@ -1150,11 +1195,19 @@ final class BTL_GraphQL
                 }
 
                 $userId = get_current_user_id();
+                $title = trim((string)($input['title'] ?? ''));
+                $content = trim((string)($input['content'] ?? ''));
+                if (strlen($title) < 3 || strlen($title) > 160) {
+                    throw new GraphQL\Error\UserError('عنوان تیکت باید بین ۳ تا ۱۶۰ کاراکتر باشد.');
+                }
+                if (strlen($content) < 5 || strlen($content) > 10000) {
+                    throw new GraphQL\Error\UserError('متن تیکت باید بین ۵ تا ۱۰٬۰۰۰ کاراکتر باشد.');
+                }
 
                 $postId = wp_insert_post([
                     'post_type' => 'support_ticket',
-                    'post_title' => sanitize_text_field($input['title']),
-                    'post_content' => wp_kses_post($input['content']),
+                    'post_title' => sanitize_text_field($title),
+                    'post_content' => wp_kses_post($content),
                     'post_status' => 'publish',
                     'post_author' => $userId,
                 ], true);
@@ -1204,7 +1257,7 @@ final class BTL_GraphQL
 
                 $ownerId = (int)get_post_meta($ticketId, 'customer_id', true);
                 $currentUserId = get_current_user_id();
-                $isStaff = current_user_can('manage_woocommerce');
+                $isStaff = BTL_Admin_Permissions::can($currentUserId, 'tickets.write');
 
                 if ($ownerId !== $currentUserId && !$isStaff) {
                     throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
@@ -1214,6 +1267,9 @@ final class BTL_GraphQL
 
                 if ($content === '') {
                     throw new GraphQL\Error\UserError('متن پاسخ خالی است.');
+                }
+                if (strlen($content) > 10000) {
+                    throw new GraphQL\Error\UserError('متن پاسخ بیش از حد مجاز است.');
                 }
 
                 BTL_Ticket_Replies::add(
@@ -1262,7 +1318,7 @@ final class BTL_GraphQL
                 $ownerId = (int)get_post_meta($ticketId, 'customer_id', true);
                 $currentUserId = get_current_user_id();
 
-                if ($ownerId !== $currentUserId && !current_user_can('manage_woocommerce')) {
+                if ($ownerId !== $currentUserId && !BTL_Admin_Permissions::can($currentUserId, 'tickets.read')) {
                     throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
                 }
 
@@ -1507,6 +1563,7 @@ final class BTL_GraphQL
             foreach ($children as $variation_id) {
                 $variation = $byId[(int) $variation_id] ?? null;
                 if (!$variation) continue;
+                if (get_post_status((int) $variation_id) !== 'publish' || !$variation->is_purchasable()) continue;
                 $cards[] = BTL_GraphQL::build_card($variation, $product);
             }
 

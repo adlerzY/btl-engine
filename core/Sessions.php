@@ -23,7 +23,6 @@ final class BTL_Sessions
     public static function boot(): void
     {
         add_action('graphql_register_types', [self::class, 'register'], 10);
-        // Reject bearer-token GraphQL requests unless the token is bound to a live session.
         add_filter('graphql_request_data', [self::class, 'authorizeGraphqlRequest'], 5, 2);
     }
 
@@ -174,8 +173,6 @@ final class BTL_Sessions
             throw new RuntimeException('session_binding_required');
         }
 
-        // A revoked token must never be able to recreate a session. A new token
-        // may bootstrap exactly one session during the post-login handshake.
         $existing = $wpdb->get_row($wpdb->prepare(
             "SELECT user_id,session_id,revoked FROM " . self::table() . " WHERE token_hash=%s LIMIT 1",
             $tokenHash
@@ -211,13 +208,14 @@ final class BTL_Sessions
         $tokenHash = self::currentTokenHash();
         $previousTokenHash = self::previousTokenHash();
         $now = current_time('mysql', true);
-        if ($userId < 1 || $tokenHash === '' || $previousTokenHash === '' || !self::sessionExists($userId, $sessionId, true, $previousTokenHash)) {
+        $expectedTokenHash = $previousTokenHash !== '' ? $previousTokenHash : $tokenHash;
+        if ($userId < 1 || $tokenHash === '' || !self::sessionExists($userId, $sessionId, true, $expectedTokenHash)) {
             throw new RuntimeException('session_binding_rejected');
         }
         $updated = $wpdb->query($wpdb->prepare(
             "UPDATE " . self::table() . " SET token_hash=%s,last_active=%s
-             WHERE user_id=%d AND session_id=%s AND revoked=0",
-            $tokenHash, $now, $userId, $sessionId
+             WHERE user_id=%d AND session_id=%s AND token_hash=%s AND revoked=0",
+            $tokenHash, $now, $userId, $sessionId, $expectedTokenHash
         ));
         if ($updated === false || $updated < 1) throw new RuntimeException('session_touch_failed');
         self::clearRequestSessionCache();
@@ -295,13 +293,14 @@ final class BTL_Sessions
 
         global $wpdb;
         $table = self::table();
+        $cutoff = gmdate('Y-m-d H:i:s', time() - (self::SESSION_INACTIVITY_DAYS * DAY_IN_SECONDS));
         if ($requireToken) {
             if ($tokenHash === '') return self::$requestSessionCache[$cacheKey] = false;
-            $sql = "SELECT 1 FROM {$table} WHERE user_id=%d AND session_id=%s AND token_hash=%s AND revoked=0 LIMIT 1";
-            $row = $wpdb->get_var($wpdb->prepare($sql, $userId, $sessionId, $tokenHash));
+            $sql = "SELECT 1 FROM {$table} WHERE user_id=%d AND session_id=%s AND token_hash=%s AND revoked=0 AND last_active >= %s LIMIT 1";
+            $row = $wpdb->get_var($wpdb->prepare($sql, $userId, $sessionId, $tokenHash, $cutoff));
         } else {
-            $sql = "SELECT 1 FROM {$table} WHERE user_id=%d AND session_id=%s AND revoked=0 LIMIT 1";
-            $row = $wpdb->get_var($wpdb->prepare($sql, $userId, $sessionId));
+            $sql = "SELECT 1 FROM {$table} WHERE user_id=%d AND session_id=%s AND revoked=0 AND last_active >= %s LIMIT 1";
+            $row = $wpdb->get_var($wpdb->prepare($sql, $userId, $sessionId, $cutoff));
         }
 
         if ($wpdb->last_error) {
@@ -360,10 +359,7 @@ final class BTL_Sessions
         $tokenHash = self::currentTokenHash();
         if ($tokenHash === '' || trim($query) === '') return $requestData;
 
-        // Bootstrap and refresh are the only authenticated requests that may
-        // establish a session binding before normal authorization. Keep these
-        // checks exact and cheap; the previous implementation scanned a very
-        // large resolver-name blacklist on every authenticated GraphQL request.
+
         $hasBootstrapProof = isset($_SERVER['HTTP_X_BTL_SESSION_BOOTSTRAP'])
             && $_SERVER['HTTP_X_BTL_SESSION_BOOTSTRAP'] !== '';
         $hasPreviousAuthorization = isset($_SERVER['HTTP_X_BTL_PREVIOUS_AUTHORIZATION'])
@@ -376,12 +372,13 @@ final class BTL_Sessions
             }
         }
 
-        if ($hasPreviousAuthorization) {
             $canonicalQuery = self::canonicalizeBootstrapMutation($query);
+
             if (hash_equals(self::TOUCH_SESSION_CANONICAL, $canonicalQuery)) {
                 return $requestData;
             }
 
+        if ($hasPreviousAuthorization) {
             if (
                 isset($_SERVER['HTTP_X_BTL_SESSION_REFRESH'])
                 && $_SERVER['HTTP_X_BTL_SESSION_REFRESH'] === '1'
@@ -396,8 +393,7 @@ final class BTL_Sessions
         }
 
         if (!self::sessionExists(get_current_user_id(), self::requestSessionId(), true)) {
-            // Keep the request syntactically valid but guaranteed to fail GraphQL
-            // validation, so no resolver (including customer/order resolvers) runs.
+
             $requestData['query'] = 'query BtlSessionDenied { __btl_session_denied__ }';
         }
         return $requestData;

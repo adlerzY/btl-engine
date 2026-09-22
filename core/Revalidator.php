@@ -373,7 +373,7 @@ final class BTL_Revalidator
             $rows = $wpdb->get_results($wpdb->prepare(
                 "SELECT tag FROM {$table}
                  WHERE available_at <= %d
-                   AND (state = 'pending' OR (state = 'claimed' AND lease_until < %d))
+                   AND (state = 'pending' OR state = 'failed' OR (state = 'claimed' AND lease_until < %d))
                  ORDER BY created_at ASC, tag ASC
                  LIMIT %d
                  FOR UPDATE",
@@ -396,9 +396,10 @@ final class BTL_Revalidator
 
             $updated = $wpdb->query($wpdb->prepare(
                 "UPDATE {$table}
-                    SET state='claimed', claim_token=%s, lease_until=%d, updated_at=%d
+                    SET state='claimed', attempts=IF(state='failed', 0, attempts),
+                        claim_token=%s, lease_until=%d, updated_at=%d
                   WHERE tag IN ({$placeholders})
-                    AND (state = 'pending' OR (state = 'claimed' AND lease_until < %d))",
+                    AND (state = 'pending' OR state = 'failed' OR (state = 'claimed' AND lease_until < %d))",
                 array_merge($args, [$now])
             ));
 
@@ -456,9 +457,10 @@ final class BTL_Revalidator
                     SET state=IF(attempts+1 >= %d, 'failed', 'pending'),
                         attempts=attempts+1,
                         claim_token=NULL, lease_until=0,
-                        available_at=IF(state='failed', 0, %d), updated_at=%d
+                        available_at=IF(attempts+1 >= %d, %d, %d), updated_at=%d
                   WHERE state='claimed' AND claim_token=%s",
                 self::MAX_RETRIES,
+                $now + HOUR_IN_SECONDS,
                 $now + max(1, $delay),
                 $now,
                 $token
@@ -476,6 +478,7 @@ final class BTL_Revalidator
 
         $args = array_merge([
             self::MAX_RETRIES,
+            $now + HOUR_IN_SECONDS,
             $now + max(1, $delay),
             $now,
             $token,
@@ -485,7 +488,7 @@ final class BTL_Revalidator
                 SET state=IF(attempts+1 >= %d, 'failed', 'pending'),
                     attempts=attempts+1,
                     claim_token=NULL, lease_until=0,
-                    available_at=IF(state='failed', 0, %d), updated_at=%d
+                    available_at=IF(attempts+1 >= %d, %d, %d), updated_at=%d
               WHERE state='claimed' AND claim_token=%s AND tag IN ({$placeholders})",
             $args
         ));
@@ -503,7 +506,7 @@ final class BTL_Revalidator
         return (bool) $wpdb->get_var($wpdb->prepare(
             "SELECT 1 FROM " . self::table() . "
              WHERE available_at <= %d
-               AND (state='pending' OR (state='claimed' AND lease_until < %d))
+               AND (state='pending' OR state='failed' OR (state='claimed' AND lease_until < %d))
              LIMIT 1",
             $now,
             $now
