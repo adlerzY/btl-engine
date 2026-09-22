@@ -25,7 +25,7 @@ final class BTL_Avatar_Guard
             return $check;
         }
 
-        if (user_can((int)$objectId, 'manage_woocommerce')) {
+        if (BTL_Admin_Permissions::get((int)$objectId)) {
             return $check;
         }
 

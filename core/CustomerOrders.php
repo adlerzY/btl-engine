@@ -4,6 +4,7 @@ defined('ABSPATH') || exit;
 final class BTL_Customer_Orders
 {
     private const MAX_CART_QUANTITY = 10;
+    private const UNPAID_ORDER_TTL = 2 * HOUR_IN_SECONDS;
 
     private const READY_OPTION = 'btl_checkout_requests_table_ready';
     public static function boot(): void
@@ -425,6 +426,24 @@ final class BTL_Customer_Orders
                 BTL_Secure_Fields::deleteByOrder($oid);
                 try{$orphan->delete(true);}catch(Throwable $ignored){}
             }
+        }
+
+        $unpaid = wc_get_orders([
+            'status' => ['pending', 'checkout-draft', 'failed'],
+            'limit' => 50,
+            'date_created' => '<' . (time() - self::UNPAID_ORDER_TTL),
+            'orderby' => 'date',
+            'order' => 'ASC',
+            'return' => 'objects',
+        ]);
+        foreach ($unpaid as $order) {
+            if (!$order instanceof WC_Order || $order->is_paid()) continue;
+            if ($order->get_created_via() !== 'btl_graphql') continue;
+            $orderId = (int)$order->get_id();
+            BTL_CdKey_Stock::releaseReservedForOrder($orderId);
+            $order->update_meta_data('_btl_auto_cancelled_at', gmdate('c'));
+            $order->save();
+            $order->update_status('cancelled', 'لغو خودکار سفارش پرداخت‌نشده پس از دو ساعت.');
         }
     }
     private static function attachOrder(int $id,int $orderId,string $token): void

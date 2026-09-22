@@ -88,9 +88,10 @@ final class BTL_Admin_Orders
                     'orderby' => 'date',
                     'order' => 'DESC',
                     'return' => 'objects',
+                    'status' => ['processing', 'completed'],
                 ];
 
-                if ($status !== '' && $status !== 'all') {
+                if (in_array($status, ['processing', 'completed'], true)) {
                     $queryArgs['status'] = [$status];
                 }
                 if ($search !== '') {

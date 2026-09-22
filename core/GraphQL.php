@@ -335,6 +335,33 @@ final class BTL_GraphQL
 
     private static function register_site_maintenance_fields(): void
     {
+        register_graphql_object_type('BtlSiteNoticeSettings', [
+            'fields' => [
+                'enabled' => ['type' => 'Boolean'],
+                'title' => ['type' => 'String'],
+                'message' => ['type' => 'String'],
+            ],
+        ]);
+
+        register_graphql_field('RootQuery', 'siteNotice', [
+            'type' => 'BtlSiteNoticeSettings',
+            'resolve' => static function (): array {
+                return [
+                    'enabled' => (bool) get_option('btl_site_notice_enabled', false),
+                    'title' => (string) get_option('btl_site_notice_title', 'اطلاعیه سایت'),
+                    'message' => (string) get_option('btl_site_notice_message', 'اطلاعیه جدیدی برای شما داریم.'),
+                ];
+            },
+        ]);
+
+        register_graphql_object_type('BtlSiteMaintenanceSettings', [
+            'fields' => [
+                'enabled' => ['type' => 'Boolean'],
+                'title' => ['type' => 'String'],
+                'description' => ['type' => 'String'],
+            ],
+        ]);
+
         register_graphql_field('RootQuery', 'siteMaintenanceMode', [
             'type' => 'Boolean',
             'resolve' => static function (): bool {
@@ -342,20 +369,32 @@ final class BTL_GraphQL
             },
         ]);
 
+        register_graphql_field('RootQuery', 'siteMaintenanceSettings', [
+            'type' => 'BtlSiteMaintenanceSettings',
+            'resolve' => static function (): array {
+                return [
+                    'enabled' => (bool) get_option('btl_site_maintenance_mode', false),
+                    'title' => (string) get_option('btl_site_maintenance_title', 'سایت در حال به‌روزرسانی است'),
+                    'description' => (string) get_option('btl_site_maintenance_description', 'در حال اعمال تغییرات و بهبودهای سایت هستیم. لطفاً چند دقیقه بعد دوباره مراجعه کنید.'),
+                ];
+            },
+        ]);
+
         if (!btl_is_admin_graphql_request()) {
             return;
         }
 
-        register_graphql_mutation('setSiteMaintenanceMode', [
+        register_graphql_mutation('setSiteNotice', [
             'inputFields' => [
-                'enabled' => [
-                    'type' => 'Boolean',
-                    'description' => 'فعال/غیرفعال کردن حالت تعمیرات سایت.',
-                ],
+                'enabled' => ['type' => 'Boolean'],
+                'title' => ['type' => 'String'],
+                'message' => ['type' => 'String'],
             ],
             'outputFields' => [
                 'success' => ['type' => 'Boolean'],
                 'enabled' => ['type' => 'Boolean'],
+                'title' => ['type' => 'String'],
+                'message' => ['type' => 'String'],
             ],
             'mutateAndGetPayload' => static function ($input): array {
                 $adminPermissions = BTL_Admin_Permissions::get(get_current_user_id());
@@ -364,11 +403,59 @@ final class BTL_GraphQL
                 }
 
                 $enabled = !empty($input['enabled']);
-                update_option('btl_site_maintenance_mode', $enabled, false);
+                $title = sanitize_text_field((string)($input['title'] ?? get_option('btl_site_notice_title', 'اطلاعیه سایت')));
+                $message = sanitize_textarea_field((string)($input['message'] ?? get_option('btl_site_notice_message', 'اطلاعیه جدیدی برای شما داریم.')));
+                if ($title === '') $title = 'اطلاعیه سایت';
+                if ($message === '') $message = 'اطلاعیه جدیدی برای شما داریم.';
+
+                update_option('btl_site_notice_enabled', $enabled, false);
+                update_option('btl_site_notice_title', $title, false);
+                update_option('btl_site_notice_message', $message, false);
 
                 return [
                     'success' => true,
                     'enabled' => $enabled,
+                    'title' => $title,
+                    'message' => $message,
+                ];
+            },
+        ]);
+
+        register_graphql_mutation('setSiteMaintenanceMode', [
+            'inputFields' => [
+                'enabled' => [
+                    'type' => 'Boolean',
+                    'description' => 'فعال/غیرفعال کردن حالت تعمیرات سایت.',
+                ],
+                'title' => ['type' => 'String'],
+                'description' => ['type' => 'String'],
+            ],
+            'outputFields' => [
+                'success' => ['type' => 'Boolean'],
+                'enabled' => ['type' => 'Boolean'],
+                'title' => ['type' => 'String'],
+                'description' => ['type' => 'String'],
+            ],
+            'mutateAndGetPayload' => static function ($input): array {
+                $adminPermissions = BTL_Admin_Permissions::get(get_current_user_id());
+                if (!is_user_logged_in() || !$adminPermissions) {
+                    throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
+                }
+
+                $enabled = !empty($input['enabled']);
+                $title = sanitize_text_field((string)($input['title'] ?? get_option('btl_site_maintenance_title', 'سایت در حال به‌روزرسانی است')));
+                $description = sanitize_textarea_field((string)($input['description'] ?? get_option('btl_site_maintenance_description', 'در حال اعمال تغییرات و بهبودهای سایت هستیم. لطفاً چند دقیقه بعد دوباره مراجعه کنید.')));
+                if ($title === '') $title = 'سایت در حال به‌روزرسانی است';
+                if ($description === '') $description = 'در حال اعمال تغییرات و بهبودهای سایت هستیم. لطفاً چند دقیقه بعد دوباره مراجعه کنید.';
+                update_option('btl_site_maintenance_mode', $enabled, false);
+                update_option('btl_site_maintenance_title', $title, false);
+                update_option('btl_site_maintenance_description', $description, false);
+
+                return [
+                    'success' => true,
+                    'enabled' => $enabled,
+                    'title' => $title,
+                    'description' => $description,
                 ];
             },
         ]);
@@ -879,6 +966,19 @@ final class BTL_GraphQL
 
     private static function register_order_fields(): void
     {
+        register_graphql_field('Order', 'cancelledAt', [
+            'type' => 'String',
+            'resolve' => static function ($order): ?string {
+                $orderId = (int)($order->databaseId ?? 0);
+                $wcOrder = $orderId ? wc_get_order($orderId) : false;
+                if (!$wcOrder || !in_array($wcOrder->get_status(), ['cancelled', 'failed'], true)) return null;
+                $explicit = (string)$wcOrder->get_meta('_btl_auto_cancelled_at', true);
+                if ($explicit !== '') return $explicit;
+                $modified = $wcOrder->get_date_modified();
+                return $modified ? $modified->date('c') : null;
+            },
+        ]);
+
         register_graphql_field('Order', 'paymentUrl', [
             'type'        => 'String',
             'description' => 'لینک مستقیم درگاه پرداخت سفارش که توسط خود ووکامرس تولید می‌شود.',
@@ -996,7 +1096,7 @@ final class BTL_GraphQL
             'resolve' => static function ($user) {
                 $userId = (int)($user->databaseId ?? 0);
 
-                return $userId ? user_can($userId, 'manage_woocommerce') : false;
+                return $userId ? (bool) BTL_Admin_Permissions::get($userId) : false;
             },
         ]);
 
@@ -1020,11 +1120,14 @@ final class BTL_GraphQL
                 }
 
                 $userId = get_current_user_id();
-                if (str_starts_with($avatarId, 'admin/') && !BTL_Admin_Permissions::can($userId, 'cdkeys.reveal')) {
+                if (str_starts_with($avatarId, 'admin/') && !BTL_Admin_Permissions::get($userId)) {
                     throw new GraphQL\Error\UserError('این آواتار فقط برای کارکنان مجاز است.');
                 }
 
                 update_user_meta($userId, 'btl_avatar_url', $avatarId);
+                if (!hash_equals($avatarId, (string)get_user_meta($userId, 'btl_avatar_url', true))) {
+                    throw new GraphQL\Error\UserError('ذخیره آواتار انجام نشد.');
+                }
 
                 return [
                     'success' => true,

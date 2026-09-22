@@ -34,11 +34,13 @@ final class BTL_Invalidation
         add_action('woocommerce_new_product_variation', [self::class, 'on_variation_saved'], 100, 1);
 
         add_action('transition_post_status', [self::class, 'on_post_status_change'], 20, 3);
+        add_action('post_updated', [self::class, 'on_post_updated'], 20, 3);
         add_action('before_delete_post', [self::class, 'on_before_delete_post'], 10, 1);
 
         add_action('created_term', [self::class, 'on_term_changed'], 20, 3);
         add_action('edited_term', [self::class, 'on_term_changed'], 20, 3);
         add_action('delete_term', [self::class, 'on_term_deleted'], 20, 4);
+        add_action('set_object_terms', [self::class, 'on_set_object_terms'], 20, 6);
 
         add_action('acf/update_value', [self::class, 'capture_acf_change'], 5, 4);
         add_action('acf/save_post', [self::class, 'on_acf_save'], 25, 1);
@@ -108,6 +110,10 @@ final class BTL_Invalidation
 
         if ($scope !== self::SCOPE_CONTENT) {
             $tags[] = "product-pricing-{$slug}";
+        }
+
+        if ($scope !== self::SCOPE_PRICING) {
+            $tags[] = 'seo-sitemap';
         }
 
         foreach (self::productCategorySlugs($productId) as $catSlug) {
@@ -227,7 +233,7 @@ final class BTL_Invalidation
 
     public static function on_post_status_change($newStatus, $oldStatus, $post): void
     {
-        if (!$post instanceof WP_Post || $post->post_type !== 'product') {
+        if (!$post instanceof WP_Post) {
             return;
         }
 
@@ -239,13 +245,52 @@ final class BTL_Invalidation
             return;
         }
 
-        BTL_Cache::delete(self::LATEST_CUTOFF_KEY);
-        self::queueProduct((int) $post->ID, self::SCOPE_ALL);
+        if ($post->post_type === 'product') {
+            BTL_Cache::delete(self::LATEST_CUTOFF_KEY);
+            self::queueProduct((int) $post->ID, self::SCOPE_ALL);
 
-        $tags = self::dedupeTags(['home-latest']);
+            $tags = self::dedupeTags(['home-latest']);
+            if ($tags && function_exists('btl_queue_revalidation')) {
+                btl_queue_revalidation($tags);
+            }
+            return;
+        }
 
-        if ($tags && function_exists('btl_queue_revalidation')) {
-            btl_queue_revalidation($tags);
+        if ($post->post_type === 'post') {
+            $tags = self::dedupeTags([
+                'seo-sitemap',
+                $post->post_name !== '' ? "post-{$post->post_name}" : '',
+            ]);
+            if ($tags && function_exists('btl_queue_revalidation')) {
+                btl_queue_revalidation($tags);
+            }
+        }
+    }
+
+    public static function on_post_updated($postId, $postAfter, $postBefore): void
+    {
+        if (!$postAfter instanceof WP_Post || !$postBefore instanceof WP_Post) {
+            return;
+        }
+
+        if ($postAfter->post_status !== 'publish' || $postAfter->post_name === $postBefore->post_name) {
+            return;
+        }
+
+        if ($postAfter->post_type === 'product') {
+            self::queueProduct((int) $postId, self::SCOPE_CONTENT);
+            return;
+        }
+
+        if ($postAfter->post_type === 'post') {
+            $tags = self::dedupeTags([
+                'seo-sitemap',
+                $postAfter->post_name !== '' ? "post-{$postAfter->post_name}" : '',
+                $postBefore->post_name !== '' ? "post-{$postBefore->post_name}" : '',
+            ]);
+            if ($tags && function_exists('btl_queue_revalidation')) {
+                btl_queue_revalidation($tags);
+            }
         }
     }
 
@@ -253,12 +298,25 @@ final class BTL_Invalidation
     {
         $post = get_post((int) $postId);
 
-        if (!$post || $post->post_type !== 'product') {
+        if (!$post) {
             return;
         }
 
-        BTL_Cache::delete(self::LATEST_CUTOFF_KEY);
-        self::queueProduct((int) $post->ID, self::SCOPE_ALL);
+        if ($post->post_type === 'product') {
+            BTL_Cache::delete(self::LATEST_CUTOFF_KEY);
+            self::queueProduct((int) $post->ID, self::SCOPE_ALL);
+            return;
+        }
+
+        if ($post->post_type === 'post') {
+            $tags = self::dedupeTags([
+                'seo-sitemap',
+                $post->post_name !== '' ? "post-{$post->post_name}" : '',
+            ]);
+            if ($tags && function_exists('btl_queue_revalidation')) {
+                btl_queue_revalidation($tags);
+            }
+        }
     }
 
     public static function on_term_changed($termId, $ttId, $taxonomy): void
@@ -276,6 +334,30 @@ final class BTL_Invalidation
 
         if ($tags && function_exists('btl_queue_revalidation')) {
             btl_queue_revalidation($tags);
+        }
+    }
+
+    public static function on_set_object_terms($objectId, $terms, $ttIds, $taxonomy, $append, $oldTtIds): void
+    {
+        $post = get_post((int) $objectId);
+
+        if (!$post) {
+            return;
+        }
+
+        if ($taxonomy === 'product_cat' && $post->post_type === 'product') {
+            self::queueProduct((int) $objectId, self::SCOPE_CONTENT);
+            return;
+        }
+
+        if ($taxonomy === 'category' && $post->post_type === 'post' && $post->post_status === 'publish') {
+            $tags = self::dedupeTags([
+                'seo-sitemap',
+                $post->post_name !== '' ? "post-{$post->post_name}" : '',
+            ]);
+            if ($tags && function_exists('btl_queue_revalidation')) {
+                btl_queue_revalidation($tags);
+            }
         }
     }
 
@@ -454,6 +536,7 @@ final class BTL_Invalidation
         switch ($taxonomy) {
             case 'product_cat':
                 $tags[] = 'header-data';
+                $tags[] = 'seo-sitemap';
                 $tags[] = 'banners';
                 $tags[] = BTL_Helpers::slugTag('banners', $term->slug);
                 $tags[] = BTL_Helpers::slugTag('category', $term->slug);
@@ -469,6 +552,7 @@ final class BTL_Invalidation
 
             case 'category':
                 $tags[] = 'header-data';
+                $tags[] = 'seo-sitemap';
                 $tags[] = "blog-category-{$term->slug}";
                 break;
 
