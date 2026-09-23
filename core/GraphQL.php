@@ -1485,6 +1485,47 @@ final class BTL_GraphQL
         return $variationObjects;
     }
 
+    private static function load_archive_variation_meta(array $children): array
+    {
+        $children = array_values(array_filter(array_map('intval', $children)));
+        if (!$children) {
+            return [];
+        }
+
+        global $wpdb;
+
+        $idPlaceholders = implode(',', array_fill(0, count($children), '%d'));
+        $metaKeys = [
+            '_price',
+            '_regular_price',
+            '_btl_gift_final_price',
+            '_btl_gift_regular_price',
+            '_btl_code_final_price',
+            '_btl_code_regular_price',
+            '_btl_commission_discount',
+        ];
+        $metaPlaceholders = implode(',', array_fill(0, count($metaKeys), '%s'));
+        $args = array_merge($children, $metaKeys, ['attribute_%']);
+
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT post_id, meta_key, meta_value
+               FROM {$wpdb->postmeta}
+              WHERE post_id IN ({$idPlaceholders})
+                AND (meta_key IN ({$metaPlaceholders}) OR meta_key LIKE %s)
+              ORDER BY post_id ASC, meta_id ASC",
+            $args
+        ));
+
+        $meta = [];
+        foreach ($rows ?: [] as $row) {
+            $postId = (int) $row->post_id;
+            $key = (string) $row->meta_key;
+            $meta[$postId][$key] = (string) $row->meta_value;
+        }
+
+        return $meta;
+    }
+
     public static function archive_pricing(int $product_id, string $region_slug): array
     {
         $product_id = (int)$product_id;
@@ -1554,16 +1595,16 @@ final class BTL_GraphQL
                     }
                 };
 
-                $variationObjects = self::load_variation_objects($children);
+                $variationMeta = self::load_archive_variation_meta($children);
 
                 foreach ($children as $variationId) {
-                    $variation = $variationObjects[$variationId] ?? null;
-                    if (!$variation) continue;
+                    $meta = $variationMeta[$variationId] ?? [];
+                    if (!$meta) continue;
 
-                    $giftPrice = $variation->get_meta('_btl_gift_final_price');
-                    $giftRegular = $variation->get_meta('_btl_gift_regular_price');
-                    $codePrice = $variation->get_meta('_btl_code_final_price');
-                    $codeRegular = $variation->get_meta('_btl_code_regular_price');
+                    $giftPrice = $meta['_btl_gift_final_price'] ?? '';
+                    $giftRegular = $meta['_btl_gift_regular_price'] ?? '';
+                    $codePrice = $meta['_btl_code_final_price'] ?? '';
+                    $codeRegular = $meta['_btl_code_regular_price'] ?? '';
                     if ($giftRegular === '') $giftRegular = $giftPrice;
                     if ($codeRegular === '') $codeRegular = $codePrice;
 
@@ -1571,10 +1612,10 @@ final class BTL_GraphQL
                     $giftRegularValue = self::parse_price_value($giftRegular);
                     $codePriceValue = self::parse_price_value($codePrice);
                     $codeRegularValue = self::parse_price_value($codeRegular);
-                    $commissionDiscount = BTL_Price_Engine::priceValue($variation->get_meta('_btl_commission_discount')) ?? 0.0;
+                    $commissionDiscount = BTL_Price_Engine::priceValue($meta['_btl_commission_discount'] ?? '') ?? 0.0;
 
-                    $directPrice = $variation->get_price();
-                    $directRegular = $variation->get_regular_price();
+                    $directPrice = $meta['_price'] ?? '';
+                    $directRegular = $meta['_regular_price'] ?? '';
                     $hasCodeStock = ((int)($stockCounts[$variationId] ?? 0)) > 0;
                     $directPriceValue = self::parse_price_value($directPrice);
                     $directRegularValue = self::parse_price_value($directRegular);
@@ -1593,7 +1634,8 @@ final class BTL_GraphQL
 
                     $matchesRegion = false;
                     $variationHasRegion = false;
-                    foreach ((array)$variation->get_variation_attributes() as $key => $value) {
+                    foreach ($meta as $key => $value) {
+                        if (strpos((string)$key, 'attribute_') !== 0) continue;
                         $taxonomy = str_replace('attribute_', '', (string)$key);
                         if (stripos($taxonomy, 'region') === false && stripos($taxonomy, 'ریجن') === false) continue;
                         $value = trim((string)$value);
