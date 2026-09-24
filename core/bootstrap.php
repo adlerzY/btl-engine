@@ -145,6 +145,7 @@ add_action('woocommerce_save_product_variation', ['BTL_Price_Engine', 'handle_pr
 add_action('btl_sync_exchange_rates', ['BTL_Rate_Sync', 'run']);
 add_action('btl_pricing_discount_boundary', ['BTL_Price_Engine', 'handle_discount_boundary'], 10, 2);
 add_action('update_option_btl_pricing_settings', ['BTL_Rate_Sync', 'maybe_reschedule'], 20, 2);
+add_action('update_option_btl_pricing_settings', ['BTL_Scheduler', 'on_pricing_settings_updated'], 25, 2);
 
 add_filter('register_post_type_args', ['BTL_GraphQL', 'expose_support_ticket_type'], 10, 2);
 add_filter('graphql_post_object_connection_query_args', ['BTL_GraphQL', 'restrict_support_ticket_query'], 10, 5);
