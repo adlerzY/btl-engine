@@ -33,6 +33,7 @@ function btl_autoload_core_class(string $class): void
         $map = [
             'BTL_Helpers' => 'Helpers.php',
             'BTL_Pricing_Fields' => 'PricingFields.php',
+            'BTL_Pricing_Settings' => 'PricingSettings.php',
             'BTL_Region_Registry' => 'RegionRegistry.php',
             'BTL_Cache' => 'Cache.php',
             'BTL_Invalidation' => 'Invalidation.php',
@@ -142,7 +143,8 @@ add_action('woocommerce_process_product_meta', ['BTL_Price_Engine', 'handle_prod
 add_action('woocommerce_save_product_variation', ['BTL_Price_Engine', 'handle_product_update'], 99);
 
 add_action('btl_sync_exchange_rates', ['BTL_Rate_Sync', 'run']);
-add_action('update_option_site-settings', ['BTL_Rate_Sync', 'maybe_reschedule'], 20, 2);
+add_action('btl_pricing_discount_boundary', ['BTL_Price_Engine', 'handle_discount_boundary'], 10, 2);
+add_action('update_option_btl_pricing_settings', ['BTL_Rate_Sync', 'maybe_reschedule'], 20, 2);
 
 add_filter('register_post_type_args', ['BTL_GraphQL', 'expose_support_ticket_type'], 10, 2);
 add_filter('graphql_post_object_connection_query_args', ['BTL_GraphQL', 'restrict_support_ticket_query'], 10, 5);
@@ -166,8 +168,6 @@ if (is_admin()) {
 
 add_action('acf/update_value', ['BTL_Scheduler', 'capture_acf_change'], 5, 4);
 add_action('acf/save_post', ['BTL_Scheduler', 'trigger_mass_update'], 20);
-add_action('update_option_site-settings', ['BTL_Scheduler', 'on_site_settings_updated'], 10, 2);
-add_action('jet-engine/options-pages/updated', ['BTL_Scheduler', 'trigger_mass_update'], 10);
 add_action('btl_batch_step', ['BTL_Scheduler', 'process_step'], 10, 2);
 add_action('btl_batch_watchdog', ['BTL_Scheduler', 'watchdog'], 10, 1);
 add_action('btl_batch_job', ['BTL_Scheduler', 'legacy_forwarder'], 10, 2);

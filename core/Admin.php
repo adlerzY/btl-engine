@@ -70,13 +70,27 @@ final class BTL_Admin
                 'wrapper_class' => 'form-row form-row-first',
             ]);
 
+            self::render_date_field([
+                'id' => "_btl_game_discount_end_date[$loop]",
+                'label' => 'Game Discount End Date',
+                'value' => BTL_Pricing_Settings::variationDate($variation->get_id(), '_btl_game_discount_end_at'),
+                'wrapper_class' => 'form-row form-row-last',
+            ]);
+
             self::render_text_field([
                 'id' => "_btl_commission_discount[$loop]",
                 'label' => 'Commission Discount (%)',
                 'value' => (string) get_post_meta($variation->get_id(), '_btl_commission_discount', true),
-                'wrapper_class' => 'form-row form-row-last',
+                'wrapper_class' => 'form-row form-row-first',
                 'description' => 'Discounts only the store commission.',
                 'desc_tip' => true,
+            ]);
+
+            self::render_date_field([
+                'id' => "_btl_commission_discount_end_date[$loop]",
+                'label' => 'Commission Discount End Date',
+                'value' => BTL_Pricing_Settings::variationDate($variation->get_id(), '_btl_commission_discount_end_at'),
+                'wrapper_class' => 'form-row form-row-last',
             ]);
         } catch (Throwable $e) {
             BTL_Helpers::logger('Admin::fields failed for variation ' . $variation->get_id() . ': ' . $e->getMessage());
@@ -103,13 +117,19 @@ final class BTL_Admin
         $code = self::sanitize($_POST['_btl_code_price'][$index] ?? '');
         $base = self::sanitize($_POST['base_foreign_price'][$index] ?? '');
         $gameDiscount = self::sanitizePercentage($_POST['_btl_game_discount'][$index] ?? '');
+        $gameDiscountEndDate = self::sanitizeDate($_POST['_btl_game_discount_end_date'][$index] ?? '');
+        $gameDiscountEndAt = BTL_Pricing_Settings::parseDateEnd($gameDiscountEndDate);
         $commissionDiscount = self::sanitizePercentage($_POST['_btl_commission_discount'][$index] ?? '');
+        $commissionDiscountEndDate = self::sanitizeDate($_POST['_btl_commission_discount_end_date'][$index] ?? '');
+        $commissionDiscountEndAt = BTL_Pricing_Settings::parseDateEnd($commissionDiscountEndDate);
 
         $oldGift = (string) $product->get_meta('_btl_gift_price');
         $oldCode = (string) $product->get_meta('_btl_code_price');
         $oldBase = (string) $product->get_meta('base_foreign_price');
         $oldGameDiscount = (string) $product->get_meta('_btl_game_discount');
+        $oldGameDiscountEndAt = (int) $product->get_meta('_btl_game_discount_end_at');
         $oldCommissionDiscount = (string) $product->get_meta('_btl_commission_discount');
+        $oldCommissionDiscountEndAt = (int) $product->get_meta('_btl_commission_discount_end_at');
 
         $legacyPending = $product->get_meta('_btl_pricing_legacy_pending');
         $legacyPending = is_array($legacyPending)
@@ -117,8 +137,10 @@ final class BTL_Admin
             : array_values(array_intersect(['gift', 'code'], array_filter(array_map('trim', explode(',', (string)$legacyPending)))));
 
         if ($oldGift === $gift && $oldCode === $code && $oldBase === $base
-            && $oldGameDiscount === $gameDiscount && $oldCommissionDiscount === $commissionDiscount
+            && $oldGameDiscount === $gameDiscount && $oldGameDiscountEndAt === (int)($gameDiscountEndAt ?? 0)
+            && $oldCommissionDiscount === $commissionDiscount && $oldCommissionDiscountEndAt === (int)($commissionDiscountEndAt ?? 0)
             && !$legacyPending) {
+            BTL_Price_Engine::scheduleVariationDiscountBoundary($variation_id);
             return;
         }
 
@@ -126,12 +148,13 @@ final class BTL_Admin
         $product->update_meta_data('_btl_code_price', $code);
         $product->update_meta_data('base_foreign_price', $base);
         $product->update_meta_data('_btl_game_discount', $gameDiscount);
+        $product->update_meta_data('_btl_game_discount_end_at', $gameDiscountEndAt ? (string)$gameDiscountEndAt : '');
         $product->update_meta_data('_btl_commission_discount', $commissionDiscount);
+        $product->update_meta_data('_btl_commission_discount_end_at', $commissionDiscountEndAt ? (string)$commissionDiscountEndAt : '');
 
-        // An explicit variation save confirms the new fields are authoritative,
-        // even when their values are intentionally blank/disabled.
         $product->update_meta_data('_btl_pricing_legacy_pending', '');
         $product->save_meta_data();
+        BTL_Price_Engine::scheduleVariationDiscountBoundary($variation_id);
 
         $parentId = (int) wp_get_post_parent_id($variation_id);
 
@@ -141,6 +164,27 @@ final class BTL_Admin
                 BTL_Invalidation::SCOPE_PRICING
             );
         }
+    }
+
+    private static function render_date_field(array $args): void
+    {
+        $id = (string) ($args['id'] ?? '');
+        $label = (string) ($args['label'] ?? '');
+        $value = (string) ($args['value'] ?? '');
+        $wrapperClass = trim((string) ($args['wrapper_class'] ?? ''));
+
+        if ($id === '') {
+            return;
+        }
+
+        $fieldId = preg_replace('/[^A-Za-z0-9_:\-\[\]]+/', '', $id);
+        $fieldId = $fieldId !== '' ? $fieldId : 'btl_date_field';
+        ?>
+        <p class="form-field <?php echo esc_attr($fieldId); ?>_field <?php echo esc_attr($wrapperClass); ?>">
+            <label for="<?php echo esc_attr($fieldId); ?>"><?php echo esc_html($label); ?></label>
+            <input type="date" class="short" name="<?php echo esc_attr($id); ?>" id="<?php echo esc_attr($fieldId); ?>" value="<?php echo esc_attr($value); ?>" />
+        </p>
+        <?php
     }
 
     private static function render_text_field(array $args): void
@@ -208,6 +252,15 @@ final class BTL_Admin
         return (string) min(100, (float)$value);
     }
 
+    private static function sanitizeDate($value): string
+    {
+        $value = trim((string)$value);
+        if ($value === '') return '';
+        $date = DateTimeImmutable::createFromFormat('!Y-m-d', $value, wp_timezone());
+        if (!$date || $date->format('Y-m-d') !== $value) return '';
+        return $value;
+    }
+
     public static function registerSettingsPage(): void
     {
         add_submenu_page(
@@ -223,16 +276,9 @@ final class BTL_Admin
     public static function renderSettingsPage(): void
     {
         if (!current_user_can('manage_woocommerce')) wp_die('Unauthorized');
-        $settings = get_option('btl_pricing_settings', []);
-        $settings = is_array($settings) ? $settings : [];
+
+        $snapshot = BTL_Pricing_Settings::adminSnapshot();
         $status = BTL_Rate_Sync::status();
-        $rateStatus = BTL_Price_Engine::rateStatus();
-        $fields = [
-            'usd_manual_fallback_rate' => 'USD manual fallback',
-            'eur_manual_fallback_rate' => 'EUR manual fallback',
-            'try_manual_fallback_rate' => 'TRY manual fallback',
-            'uah_manual_fallback_rate' => 'UAH manual fallback',
-        ];
         ?>
         <div class="wrap">
             <h1>BTL Pricing Engine</h1>
@@ -240,22 +286,41 @@ final class BTL_Admin
                 <div class="notice notice-info"><p><?php echo esc_html(sanitize_text_field(wp_unslash($_GET['btl_notice']))); ?></p></div>
             <?php endif; ?>
             <p><strong>API status:</strong> <?php echo esc_html($status['status'] ?? 'never_tested'); ?></p>
-            <p><strong>Last test:</strong> <?php echo !empty($status['checked_at']) ? esc_html(gmdate('Y-m-d H:i:s', (int)$status['checked_at'])) . ' UTC' : 'Never'; ?></p>
+            <p><strong>Last test:</strong> <?php echo !empty($status['checked_at']) ? esc_html(wp_date('Y-m-d H:i:s', (int)$status['checked_at'], wp_timezone())) : 'Never'; ?></p>
             <p><strong>Last successful sync:</strong> <?php echo esc_html((string)get_option('btl_last_rate_sync', 'Never')); ?></p>
-            <table class="widefat striped" style="max-width:900px"><thead><tr><th>Currency</th><th>Source</th><th>Rate</th><th>Fetched</th></tr></thead><tbody>
-            <?php foreach ($rateStatus as $currency => $rate): ?><tr>
-                <td><?php echo esc_html($currency); ?></td>
-                <td><?php echo esc_html($rate['source']); ?></td>
-                <td><?php echo $rate['rate'] === null ? 'Unavailable' : esc_html((string)$rate['rate']); ?></td>
-                <td><?php echo empty($rate['fetchedAt']) ? 'N/A' : esc_html(gmdate('Y-m-d H:i:s', (int)$rate['fetchedAt'])) . ' UTC'; ?></td>
-            </tr><?php endforeach; ?>
-            </tbody></table>
-            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top:24px;max-width:700px">
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top:24px;max-width:1100px">
                 <input type="hidden" name="action" value="btl_save_pricing_settings">
                 <?php wp_nonce_field('btl_save_pricing_settings'); ?>
+                <h2>Exchange Rates</h2>
+                <p>Manual rate has priority whenever it is filled. API rate is read-only and is updated by the scheduled Navasan sync.</p>
+                <table class="widefat striped">
+                    <thead>
+                    <tr><th>Currency</th><th>API Rate (Toman)</th><th>Manual Rate (Toman)</th><th>Effective Rate</th><th>Source</th><th>API Fetched</th></tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($snapshot['currencies'] as $rate):
+                        $currency = (string)$rate['currency'];
+                        ?>
+                        <tr>
+                            <td><strong><?php echo esc_html($currency); ?></strong></td>
+                            <td><input type="text" readonly value="<?php echo esc_attr($rate['apiRate'] === null ? '' : (string)$rate['apiRate']); ?>" style="width:100%;max-width:180px"></td>
+                            <td><input name="<?php echo esc_attr(strtolower($currency)); ?>_manual_fallback_rate" type="number" min="0.0001" step="0.0001" value="<?php echo esc_attr($rate['manualRate'] === null ? '' : (string)$rate['manualRate']); ?>" style="width:100%;max-width:180px"></td>
+                            <td><?php echo $rate['effectiveRate'] === null ? 'Unavailable' : esc_html((string)$rate['effectiveRate']); ?></td>
+                            <td><?php echo esc_html((string)$rate['source']); ?></td>
+                            <td><?php echo empty($rate['apiFetchedAt']) ? 'N/A' : esc_html(wp_date('Y-m-d H:i:s', (int)$rate['apiFetchedAt'], wp_timezone())); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+
+                <h2>Global Pricing</h2>
                 <table class="form-table">
-                    <tr><th>Global Commission %</th><td><input name="global_commission_percent" type="number" min="0" max="100" step="0.01" value="<?php echo esc_attr($settings['global_commission_percent'] ?? '0'); ?>"></td></tr>
-                    <?php foreach ($fields as $name => $label): ?><tr><th><?php echo esc_html($label); ?></th><td><input name="<?php echo esc_attr($name); ?>" type="number" min="0.0001" step="0.0001" value="<?php echo esc_attr($settings[$name] ?? ''); ?>"></td></tr><?php endforeach; ?>
+                    <tr><th>Global Commission (%)</th><td><input name="global_commission_percent" type="number" min="0" max="100" step="0.01" value="<?php echo esc_attr((string)$snapshot['globalCommissionPercent']); ?>"></td></tr>
+                    <tr><th>Global Game Discount (%)</th><td><input name="global_game_discount_percent" type="number" min="0" max="100" step="0.01" value="<?php echo esc_attr($snapshot['globalGameDiscountPercent'] > 0 ? (string)$snapshot['globalGameDiscountPercent'] : ''); ?>"></td></tr>
+                    <tr><th>Global Game Discount End Date</th><td><input name="global_game_discount_end_date" type="date" value="<?php echo esc_attr((string)$snapshot['globalGameDiscountEndDate']); ?>"></td></tr>
+                    <tr><th>Global Commission Discount (%)</th><td><input name="global_commission_discount_percent" type="number" min="0" max="100" step="0.01" value="<?php echo esc_attr($snapshot['globalCommissionDiscountPercent'] > 0 ? (string)$snapshot['globalCommissionDiscountPercent'] : ''); ?>"></td></tr>
+                    <tr><th>Global Commission Discount End Date</th><td><input name="global_commission_discount_end_date" type="date" value="<?php echo esc_attr((string)$snapshot['globalCommissionDiscountEndDate']); ?>"></td></tr>
+                    <tr><th>Rate Sync Interval (hours)</th><td><input name="rate_sync_interval_hours" type="number" min="1" max="168" step="1" value="<?php echo esc_attr((string)$snapshot['rateSyncIntervalHours']); ?>"></td></tr>
                 </table>
                 <?php submit_button('Save Pricing Settings'); ?>
             </form>
@@ -272,15 +337,22 @@ final class BTL_Admin
     public static function saveSettings(): void
     {
         self::authorizeSettings('btl_save_pricing_settings');
-        $settings = get_option('btl_pricing_settings', []);
-        $settings = is_array($settings) ? $settings : [];
-        foreach (['global_commission_percent','usd_manual_fallback_rate','eur_manual_fallback_rate','try_manual_fallback_rate','uah_manual_fallback_rate','rate_sync_interval_hours'] as $key) {
-            $value = self::sanitize($_POST[$key] ?? '');
-            if ($key === 'global_commission_percent' && $value !== '') $value = (string)min(100, (float)$value);
-            $settings[$key] = $value;
-        }
-        update_option('btl_pricing_settings', $settings);
-        wp_safe_redirect(add_query_arg('btl_notice', rawurlencode('Pricing settings saved.'), admin_url('admin.php?page=btl-pricing-engine')));
+
+        $input = [
+            'globalCommissionPercent' => $_POST['global_commission_percent'] ?? '',
+            'rateSyncIntervalHours' => $_POST['rate_sync_interval_hours'] ?? 6,
+            'globalGameDiscountPercent' => $_POST['global_game_discount_percent'] ?? '',
+            'globalGameDiscountEndDate' => $_POST['global_game_discount_end_date'] ?? '',
+            'globalCommissionDiscountPercent' => $_POST['global_commission_discount_percent'] ?? '',
+            'globalCommissionDiscountEndDate' => $_POST['global_commission_discount_end_date'] ?? '',
+            'USD' => $_POST['usd_manual_fallback_rate'] ?? '',
+            'EUR' => $_POST['eur_manual_fallback_rate'] ?? '',
+            'TRY' => $_POST['try_manual_fallback_rate'] ?? '',
+            'UAH' => $_POST['uah_manual_fallback_rate'] ?? '',
+        ];
+
+        BTL_Pricing_Settings::save($input);
+        wp_safe_redirect(add_query_arg('btl_notice', rawurlencode('Pricing settings saved and affected prices scheduled for recalculation.'), admin_url('admin.php?page=btl-pricing-engine')));
         exit;
     }
 

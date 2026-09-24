@@ -478,6 +478,145 @@ final class BTL_GraphQL
             ],
         ]);
 
+        register_graphql_object_type('BtlAdminPricingRate', [
+            'fields' => [
+                'currency' => ['type' => 'String'],
+                'apiRate' => ['type' => 'Float'],
+                'apiFetchedAt' => ['type' => 'Int'],
+                'lastSuccessfulRate' => ['type' => 'Float'],
+                'lastSuccessfulFetchedAt' => ['type' => 'Int'],
+                'manualRate' => ['type' => 'Float'],
+                'effectiveRate' => ['type' => 'Float'],
+                'source' => ['type' => 'String'],
+                'fetchedAt' => ['type' => 'Int'],
+            ],
+        ]);
+
+        register_graphql_object_type('BtlAdminPricingSettings', [
+            'fields' => [
+                'globalCommissionPercent' => ['type' => 'Float'],
+                'globalGameDiscountPercent' => ['type' => 'Float'],
+                'globalGameDiscountEndDate' => ['type' => 'String'],
+                'globalCommissionDiscountPercent' => ['type' => 'Float'],
+                'globalCommissionDiscountEndDate' => ['type' => 'String'],
+                'rateSyncIntervalHours' => ['type' => 'Int'],
+                'currencies' => ['type' => ['list_of' => 'BtlAdminPricingRate']],
+            ],
+        ]);
+
+        register_graphql_field('RootQuery', 'adminPricingSettings', [
+            'type' => 'BtlAdminPricingSettings',
+            'resolve' => static function (): array {
+                $adminPermissions = BTL_Admin_Permissions::get(get_current_user_id());
+                if (!is_user_logged_in() || !$adminPermissions) {
+                    throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
+                }
+
+                return BTL_Pricing_Settings::adminSnapshot();
+            },
+        ]);
+
+        register_graphql_object_type('BtlAdminPricingApiTest', [
+            'fields' => [
+                'success' => ['type' => 'Boolean'],
+                'healthy' => ['type' => 'Boolean'],
+                'status' => ['type' => 'String'],
+                'message' => ['type' => 'String'],
+                'checkedAt' => ['type' => 'Int'],
+                'rates' => ['type' => ['list_of' => 'BtlAdminPricingRate']],
+            ],
+        ]);
+
+        register_graphql_mutation('testAdminPricingRateApi', [
+            'inputFields' => [],
+            'outputFields' => [
+                'result' => ['type' => 'BtlAdminPricingApiTest'],
+            ],
+            'mutateAndGetPayload' => static function (): array {
+                $adminPermissions = BTL_Admin_Permissions::get(get_current_user_id());
+                if (!is_user_logged_in() || !$adminPermissions) {
+                    throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
+                }
+
+                $result = BTL_Rate_Sync::test_now();
+                $rates = [];
+                foreach ((array)($result['rates'] ?? []) as $currency => $rate) {
+                    $rates[] = [
+                        'currency' => strtoupper((string)$currency),
+                        'apiRate' => (float)$rate,
+                        'apiFetchedAt' => null,
+                        'lastSuccessfulRate' => null,
+                        'lastSuccessfulFetchedAt' => null,
+                        'manualRate' => null,
+                        'effectiveRate' => null,
+                        'source' => 'api_test',
+                        'fetchedAt' => (int)($result['checked_at'] ?? time()),
+                    ];
+                }
+
+                return [
+                    'result' => [
+                        'success' => !empty($result['healthy']),
+                        'healthy' => !empty($result['healthy']),
+                        'status' => sanitize_key((string)($result['status'] ?? 'failed')),
+                        'message' => sanitize_text_field((string)($result['message'] ?? '')),
+                        'checkedAt' => (int)($result['checked_at'] ?? time()),
+                        'rates' => $rates,
+                    ],
+                ];
+            },
+        ]);
+
+        register_graphql_mutation('updateAdminPricingSettings', [
+            'inputFields' => [
+                'globalCommissionPercent' => ['type' => 'String'],
+                'globalGameDiscountPercent' => ['type' => 'String'],
+                'globalGameDiscountEndDate' => ['type' => 'String'],
+                'globalCommissionDiscountPercent' => ['type' => 'String'],
+                'globalCommissionDiscountEndDate' => ['type' => 'String'],
+                'usdManualRate' => ['type' => 'String'],
+                'eurManualRate' => ['type' => 'String'],
+                'tryManualRate' => ['type' => 'String'],
+                'uahManualRate' => ['type' => 'String'],
+                'rateSyncIntervalHours' => ['type' => 'Int'],
+            ],
+            'outputFields' => [
+                'success' => ['type' => 'Boolean'],
+                'settings' => ['type' => 'BtlAdminPricingSettings'],
+            ],
+            'mutateAndGetPayload' => static function ($input): array {
+                $adminPermissions = BTL_Admin_Permissions::get(get_current_user_id());
+                if (!is_user_logged_in() || !$adminPermissions) {
+                    throw new GraphQL\Error\UserError('دسترسی غیرمجاز.');
+                }
+
+                $mapped = [];
+                $map = [
+                    'globalCommissionPercent' => 'globalCommissionPercent',
+                    'globalGameDiscountPercent' => 'globalGameDiscountPercent',
+                    'globalGameDiscountEndDate' => 'globalGameDiscountEndDate',
+                    'globalCommissionDiscountPercent' => 'globalCommissionDiscountPercent',
+                    'globalCommissionDiscountEndDate' => 'globalCommissionDiscountEndDate',
+                    'usdManualRate' => 'USD',
+                    'eurManualRate' => 'EUR',
+                    'tryManualRate' => 'TRY',
+                    'uahManualRate' => 'UAH',
+                    'rateSyncIntervalHours' => 'rateSyncIntervalHours',
+                ];
+
+                foreach ($map as $from => $to) {
+                    if (array_key_exists($from, $input)) {
+                        $mapped[$to] = $input[$from];
+                    }
+                }
+
+                return [
+                    'success' => true,
+                    'settings' => BTL_Pricing_Settings::save($mapped),
+                ];
+            },
+        ]);
+
         register_graphql_field('RootQuery', 'adminPricingHealth', [
             'type' => 'BtlAdminPricingHealth',
             'resolve' => static function () {
@@ -492,7 +631,7 @@ final class BTL_GraphQL
                 $apiHealthy = !empty($status['healthy']);
                 $apiStatus = sanitize_key((string) ($status['status'] ?? 'not_tested'));
                 $sources = array_map(static fn($value) => is_array($value) ? (string)($value['source'] ?? 'unavailable') : 'unavailable', $rateStatus);
-                $fallbackActive = in_array('manual_fallback', $sources, true) || in_array('last_successful', $sources, true);
+                $fallbackActive = in_array('manual', $sources, true) || in_array('last_successful', $sources, true);
                 $availableRates = count(array_filter($rateStatus, static fn($value) => is_array($value) && isset($value['rate']) && $value['rate'] !== null));
 
                 if (!$apiConfigured) {
@@ -1503,6 +1642,7 @@ final class BTL_GraphQL
             '_btl_code_final_price',
             '_btl_code_regular_price',
             '_btl_commission_discount',
+            '_btl_commission_discount_end_at',
         ];
         $metaPlaceholders = implode(',', array_fill(0, count($metaKeys), '%s'));
         $args = array_merge($children, $metaKeys, ['attribute_%']);
@@ -1612,7 +1752,15 @@ final class BTL_GraphQL
                     $giftRegularValue = self::parse_price_value($giftRegular);
                     $codePriceValue = self::parse_price_value($codePrice);
                     $codeRegularValue = self::parse_price_value($codeRegular);
-                    $commissionDiscount = BTL_Price_Engine::priceValue($meta['_btl_commission_discount'] ?? '') ?? 0.0;
+                    $commissionDiscountRaw = $meta['_btl_commission_discount'] ?? '';
+                $commissionDiscount = BTL_Price_Engine::priceValue($commissionDiscountRaw) ?? 0.0;
+                if ($commissionDiscountRaw !== '') {
+                    $commissionDiscountEnd = (int)($meta['_btl_commission_discount_end_at'] ?? 0);
+                    $commissionDiscount = $commissionDiscount > 0 && ($commissionDiscountEnd < 1 || time() <= $commissionDiscountEnd) ? $commissionDiscount : 0.0;
+                } else {
+                    $globalCommissionDiscount = BTL_Pricing_Settings::globalDiscount('commission');
+                    $commissionDiscount = !empty($globalCommissionDiscount['active']) ? (float)$globalCommissionDiscount['percent'] : 0.0;
+                }
 
                     $directPrice = $meta['_price'] ?? '';
                     $directRegular = $meta['_regular_price'] ?? '';
@@ -1737,7 +1885,7 @@ final class BTL_GraphQL
         $giftRegular = $variation->get_meta('_btl_gift_regular_price');
         $codeFinal = $variation->get_meta('_btl_code_final_price');
         $codeRegular = $variation->get_meta('_btl_code_regular_price');
-        $commissionDiscount = BTL_Price_Engine::priceValue($variation->get_meta('_btl_commission_discount')) ?? 0;
+        $commissionDiscount = BTL_Price_Engine::commissionDiscountPercent($variation);
 
         return [
             // Internal resolver context used by CdKeyStock::codeStockCount.
@@ -1761,7 +1909,7 @@ final class BTL_GraphQL
             'regionSlug'            => $regionConfig['region'] ?? null,
             'currency'              => $resolvedCurrency,
             'currencySymbol'        => $regionConfig['symbol'] ?? null,
-            'gameDiscountPercent'   => (float)($variation->get_meta('_btl_game_discount') ?: 0),
+            'gameDiscountPercent'   => BTL_Price_Engine::gameDiscountPercent($variation),
             'commissionDiscountPercent' => (float)$commissionDiscount,
             'commissionDiscountBadge' => $commissionDiscount > 0,
         ];

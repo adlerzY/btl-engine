@@ -20,6 +20,12 @@ final class BTL_Price_Engine
             [self::class, 'handle_product_update'],
             99
         );
+        add_action(
+            'btl_pricing_discount_boundary',
+            [self::class, 'handle_discount_boundary'],
+            10,
+            2
+        );
     }
 
     public static function handle_product_update(
@@ -214,11 +220,8 @@ final class BTL_Price_Engine
         }
         $rate = $currency !== null && isset($rates[$currency]) ? (float)$rates[$currency] : null;
         $base = self::priceValue($variation->get_meta('base_foreign_price'));
-        $gameDiscountRaw = $variation->get_meta('_btl_game_discount');
-        $gameDiscount = $gameDiscountRaw === ''
-            ? self::legacyGameDiscount($variation, $base)
-            : self::percentage($gameDiscountRaw);
-        $commissionDiscount = self::percentage($variation->get_meta('_btl_commission_discount'));
+        $gameDiscount = self::effectiveVariationDiscount($variation, 'game', $base);
+        $commissionDiscount = self::effectiveVariationDiscount($variation, 'commission');
         $globalCommission = self::globalCommission();
 
         $regularPrice = null;
@@ -227,8 +230,9 @@ final class BTL_Price_Engine
             $converted = $base * $rate;
             $commission = $converted * ($globalCommission / 100);
             $effectiveCommission = $commission * (1 - ($commissionDiscount / 100));
-            $regularPrice = (int) round($converted + $effectiveCommission);
-            $activePrice = self::applyDiscount($regularPrice, $gameDiscount);
+            $regularPrice = (int) round($converted + $commission);
+            $discountedBase = self::applyDiscount($converted, $gameDiscount);
+            $activePrice = (int) round($discountedBase + $effectiveCommission);
         }
 
         $dirty = self::sync_prices(
@@ -343,6 +347,124 @@ final class BTL_Price_Engine
         return $number === null ? 0.0 : max(0.0, min(100.0, $number));
     }
 
+    public static function gameDiscountPercent(WC_Product $variation): float
+    {
+        $base = self::priceValue($variation->get_meta('base_foreign_price'));
+        return self::effectiveVariationDiscount($variation, 'game', $base);
+    }
+
+    public static function commissionDiscountPercent(WC_Product $variation): float
+    {
+        return self::effectiveVariationDiscount($variation, 'commission');
+    }
+
+    private static function effectiveVariationDiscount(WC_Product $variation, string $type, ?float $base = null): float
+    {
+        $variationPercentKey = $type === 'game' ? '_btl_game_discount' : '_btl_commission_discount';
+        $variationEndKey = $type === 'game' ? '_btl_game_discount_end_at' : '_btl_commission_discount_end_at';
+        $variationRaw = $variation->get_meta($variationPercentKey);
+
+        if ($variationRaw !== '' && strtolower((string)$variationRaw) !== 'disabled') {
+            $percent = self::percentage($variationRaw);
+            $end = (int)$variation->get_meta($variationEndKey);
+            return self::discountActive($percent, $end) ? $percent : 0.0;
+        }
+
+        $global = BTL_Pricing_Settings::globalDiscount($type);
+        if (!empty($global['configured'])) {
+            return !empty($global['active']) ? (float)$global['percent'] : 0.0;
+        }
+
+        if ($type === 'game') {
+            return self::legacyGameDiscount($variation, $base);
+        }
+
+        return 0.0;
+    }
+
+    private static function discountActive(float $percent, int $end): bool
+    {
+        if ($percent <= 0) return false;
+        return $end < 1 || time() <= $end;
+    }
+
+    public static function handle_discount_boundary($scope = '', $productId = 0): void
+    {
+        $scope = sanitize_key((string)$scope);
+        $productId = (int)$productId;
+
+        if ($scope === 'variation') {
+            $variation = $productId > 0 ? wc_get_product($productId) : null;
+            if ($variation instanceof WC_Product_Variation) {
+                $parentId = (int)$variation->get_parent_id();
+                if ($parentId > 0) {
+                    self::calculate($parentId, true);
+                    self::scheduleVariationDiscountBoundary($productId);
+                }
+            }
+            return;
+        }
+
+        if ($scope === 'global') {
+            BTL_Scheduler::schedule([]);
+            self::scheduleGlobalDiscountBoundary();
+        }
+    }
+
+    public static function scheduleVariationDiscountBoundary(int $variationId): void
+    {
+        if (!function_exists('as_schedule_single_action')) return;
+
+        $variationId = (int)$variationId;
+        if ($variationId < 1) return;
+
+        if (function_exists('as_unschedule_all_actions')) {
+            as_unschedule_all_actions('btl_pricing_discount_boundary', ['scope' => 'variation', 'product_id' => $variationId], 'btl');
+        }
+
+        $variation = wc_get_product($variationId);
+        if (!$variation instanceof WC_Product_Variation) return;
+
+        $ends = [];
+        $gameRaw = $variation->get_meta('_btl_game_discount');
+        if ($gameRaw !== '' && strtolower((string)$gameRaw) !== 'disabled' && self::percentage($gameRaw) > 0) {
+            $ends[] = (int)$variation->get_meta('_btl_game_discount_end_at');
+        }
+        $commissionRaw = $variation->get_meta('_btl_commission_discount');
+        if ($commissionRaw !== '' && strtolower((string)$commissionRaw) !== 'disabled' && self::percentage($commissionRaw) > 0) {
+            $ends[] = (int)$variation->get_meta('_btl_commission_discount_end_at');
+        }
+        $future = array_values(array_filter($ends, static fn(int $value): bool => $value > time()));
+        if (!$future) return;
+        $at = min($future);
+
+        as_schedule_single_action(
+            $at,
+            'btl_pricing_discount_boundary',
+            ['scope' => 'variation', 'product_id' => $variationId],
+            'btl'
+        );
+    }
+
+    public static function scheduleGlobalDiscountBoundary(): void
+    {
+        if (!function_exists('as_schedule_single_action')) return;
+
+        if (function_exists('as_unschedule_all_actions')) {
+            as_unschedule_all_actions('btl_pricing_discount_boundary', ['scope' => 'global', 'product_id' => 0], 'btl');
+        }
+
+        $at = BTL_Pricing_Settings::nextGlobalDiscountEnd();
+        if ($at === null) return;
+
+        as_schedule_single_action(
+            $at,
+            'btl_pricing_discount_boundary',
+            ['scope' => 'global', 'product_id' => 0],
+            'btl'
+        );
+    }
+
     private static function globalCommission(): float
     {
         $settings = get_option('btl_pricing_settings', []);
@@ -455,7 +577,7 @@ final class BTL_Price_Engine
         }
 
         $rates = [];
-        foreach (['USD', 'EUR', 'TRY', 'UAH', 'USD_R', 'EUR_R'] as $currency) {
+        foreach (['USD', 'EUR', 'TRY', 'UAH'] as $currency) {
             $resolved = self::resolveRate($currency);
             if ($resolved['rate'] !== null) $rates[$currency] = $resolved['rate'];
         }
@@ -474,7 +596,7 @@ final class BTL_Price_Engine
     public static function rateStatus(): array
     {
         $result = [];
-        foreach (['USD', 'EUR', 'TRY', 'UAH', 'USD_R', 'EUR_R'] as $currency) {
+        foreach (['USD', 'EUR', 'TRY', 'UAH'] as $currency) {
             $result[$currency] = self::resolveRate($currency);
         }
         return $result;
@@ -486,22 +608,21 @@ final class BTL_Price_Engine
         $liveTtl = defined('BTL_RATE_LIVE_TTL') ? max(300, (int)BTL_RATE_LIVE_TTL) : 12 * HOUR_IN_SECONDS;
         $lkgTtl = defined('BTL_RATE_LKG_TTL') ? max($liveTtl, (int)BTL_RATE_LKG_TTL) : 7 * DAY_IN_SECONDS;
 
-        $live = get_option('btl_live_exchange_rates', []);
-        $liveRate = self::rateFromRecord($live, $currency, $now, $liveTtl);
-        if ($liveRate !== null) return ['rate' => $liveRate, 'source' => 'live', 'fetchedAt' => (int)$live['fetched_at']];
-
-        $last = get_option('btl_last_successful_exchange_rates', []);
-        $lastRate = self::rateFromRecord($last, $currency, $now, $lkgTtl);
-        if ($lastRate !== null) return ['rate' => $lastRate, 'source' => 'last_successful', 'fetchedAt' => (int)$last['fetched_at']];
-
         $settings = get_option('btl_pricing_settings', []);
         $fields = [
             'USD'=>'usd_manual_fallback_rate', 'EUR'=>'eur_manual_fallback_rate',
             'TRY'=>'try_manual_fallback_rate', 'UAH'=>'uah_manual_fallback_rate',
-            'USD_R'=>'usd_manual_fallback_rate', 'EUR_R'=>'eur_manual_fallback_rate',
         ];
         $manual = is_array($settings) ? self::priceValue($settings[$fields[$currency] ?? ''] ?? null) : null;
-        if ($manual !== null && $manual > 0) return ['rate' => $manual, 'source' => 'manual_fallback', 'fetchedAt' => null];
+        if ($manual !== null && $manual > 0) return ['rate' => $manual, 'source' => 'manual', 'fetchedAt' => null];
+
+        $live = get_option('btl_live_exchange_rates', []);
+        $liveRate = self::rateFromRecord($live, $currency, $now, $liveTtl);
+        if ($liveRate !== null) return ['rate' => $liveRate, 'source' => 'api', 'fetchedAt' => (int)($live['currency_fetched_at'][$currency] ?? $live['fetched_at'] ?? 0)];
+
+        $last = get_option('btl_last_successful_exchange_rates', []);
+        $lastRate = self::rateFromRecord($last, $currency, $now, $lkgTtl);
+        if ($lastRate !== null) return ['rate' => $lastRate, 'source' => 'last_successful', 'fetchedAt' => (int)($last['currency_fetched_at'][$currency] ?? $last['fetched_at'] ?? 0)];
 
         return ['rate' => null, 'source' => 'unavailable', 'fetchedAt' => null];
     }

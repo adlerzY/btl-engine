@@ -118,6 +118,14 @@ final class BTL_Rate_Sync
         $previousRates = is_array($previous) && isset($previous['rates']) && is_array($previous['rates'])
             ? $previous['rates']
             : [];
+        $settings = get_option(self::OPTION_KEY, []);
+        $settings = is_array($settings) ? $settings : [];
+        $manualFields = [
+            'USD' => 'usd_manual_fallback_rate',
+            'EUR' => 'eur_manual_fallback_rate',
+            'TRY' => 'try_manual_fallback_rate',
+            'UAH' => 'uah_manual_fallback_rate',
+        ];
         $changedCurrencies = [];
         $acceptedRates = [];
         $rejectedCurrencies = [];
@@ -137,7 +145,10 @@ final class BTL_Rate_Sync
             }
 
             $acceptedRates[$currency] = $newValue;
-            if ($oldValue !== $newValue) $changedCurrencies[] = $currency;
+            $manual = isset($manualFields[$currency]) ? BTL_Price_Engine::priceValue($settings[$manualFields[$currency]] ?? null) : null;
+            if ($oldValue !== $newValue && ($manual === null || $manual <= 0)) {
+                $changedCurrencies[] = $currency;
+            }
         }
 
         if (!$acceptedRates) {

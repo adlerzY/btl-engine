@@ -2,7 +2,7 @@
 
 /**
  * Plugin Name: BTL Engine
- * Version: 1.7.10
+ * Version: 1.7.11
  * Requires PHP: 8.0
  * Requires Plugins: woocommerce, wp-graphql
  */
@@ -40,6 +40,7 @@ register_deactivation_hook(__FILE__, function () {
         'btl_cdkey_cleanup_orphans',
         'btl_otp_cleanup',
         'btl_login_attempts_cleanup',
+        'btl_pricing_discount_boundary',
     ];
     if (function_exists('as_unschedule_all_actions')) {
         foreach ($hooks as $hook) {

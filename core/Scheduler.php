@@ -22,29 +22,12 @@ final class BTL_Scheduler
     private const STEP_LEASE = 900;
     private const MAX_RESUMES = 8;
 
-    /**
-     * True once update_option_site-settings has already diffed the rate fields in
-     * this request, so the ACF / JetEngine hooks that fire later in the same save
-     * must not escalate the run into a full-catalog pass.
-     */
-    private static bool $settingsDiffHandled = false;
     private static array $acfChanges = [];
 
-    /**
-     * Legacy hooks are retained so already-scheduled Action Scheduler jobs do not
-     * become dead actions after the plugin update.
-     */
     public static function boot(): void
     {
-        add_action('acf/update_value', [self::class, 'capture_acf_change'], 5, 4);
-        add_action('acf/save_post', [self::class, 'trigger_mass_update'], 20);
-        add_action('update_option_site-settings', [self::class, 'on_site_settings_updated'], 10, 2);
-        add_action('update_option_btl_pricing_settings', [self::class, 'on_pricing_settings_updated'], 10, 2);
-        add_action('jet-engine/options-pages/updated', [self::class, 'trigger_mass_update'], 10);
-
         add_action('btl_batch_step', [self::class, 'process_step'], 10, 2);
         add_action('btl_batch_watchdog', [self::class, 'watchdog'], 10, 1);
-
         add_action('btl_batch_job', [self::class, 'legacy_forwarder'], 10, 2);
         add_action('btl_product_chunk_job', [self::class, 'legacy_chunk_forwarder'], 10, 1);
         add_action('btl_cleanup_job', [self::class, 'legacy_cleanup'], 10);
@@ -57,86 +40,62 @@ final class BTL_Scheduler
         return max(1, min($size, self::MAX_BATCH_SIZE));
     }
 
-    private static function currency_map(): array
+    public static function on_pricing_settings_updated($old_value, $new_value): void
     {
-        return [
-            'usd_to_toman_rate'   => 'USD',
-            'eur_to_toman_rate'   => 'EUR',
-            'try_to_toman_rate'   => 'TRY',
-            'uah_to_toman_rate'   => 'UAH',
-            'usd_to_toman_rate_r' => 'USD_R',
-            'eur_to_toman_rate_r' => 'EUR_R',
-        ];
-    }
-
-    /**
-     * Site settings are also used by the scheduled rate sync. When rate fields
-     * change, only matching currencies are repriced. Other settings preserve the
-     * old full-reprice behaviour so existing business logic is not lost.
-     */
-    public static function on_site_settings_updated($old_value, $new_value): void
-    {
-        // The in-request static rate cache must be dropped before anything else in
-        // this request reprices a product, otherwise a single-product recalculation
-        // triggered by the same save would use the pre-update rates.
-        if (class_exists('BTL_Price_Engine') && is_callable(['BTL_Price_Engine', 'clearMemoryRates'])) {
+        if (class_exists('BTL_Price_Engine')) {
             BTL_Price_Engine::clearMemoryRates();
         }
-
         wp_cache_delete('rates', 'btl');
 
         $old = is_array($old_value) ? $old_value : [];
         $new = is_array($new_value) ? $new_value : [];
+        $fullRepriceKeys = [
+            'global_commission_percent',
+            'global_game_discount_percent',
+            'global_game_discount_end_date',
+            'global_commission_discount_percent',
+            'global_commission_discount_end_date',
+        ];
 
-        $changed_currencies = [];
-
-        foreach (self::currency_map() as $field => $currency) {
-            $old_rate = BTL_Helpers::money($old[$field] ?? 0);
-            $new_rate = BTL_Helpers::money($new[$field] ?? 0);
-
-            if ($old_rate !== $new_rate) {
-                $changed_currencies[] = $currency;
+        foreach ($fullRepriceKeys as $key) {
+            if ((string)($old[$key] ?? '') !== (string)($new[$key] ?? '')) {
+                self::schedule([]);
+                if (class_exists('BTL_Price_Engine')) {
+                    BTL_Price_Engine::scheduleGlobalDiscountBoundary();
+                }
+                return;
             }
         }
 
-        self::$settingsDiffHandled = true;
-
-        $commissionChanged = BTL_Helpers::money($old['btl_global_commission_percent'] ?? 0)
-            !== BTL_Helpers::money($new['btl_global_commission_percent'] ?? 0);
-
-        if ($commissionChanged) {
-            self::schedule([]);
-        } elseif ($changed_currencies) {
-            self::schedule($changed_currencies);
-        }
-        // Unrelated site-settings changes (for example sync interval) do not
-        // alter computed product prices, so they must not trigger a full catalog pass.
-    }
-
-    public static function on_pricing_settings_updated($old_value, $new_value): void
-    {
-        $old = is_array($old_value) ? $old_value : [];
-        $new = is_array($new_value) ? $new_value : [];
-        if (BTL_Helpers::money($old['global_commission_percent'] ?? 0) !== BTL_Helpers::money($new['global_commission_percent'] ?? 0)) {
-            self::schedule([]);
-            return;
-        }
-        $fields = ['usd_manual_fallback_rate'=>'USD','eur_manual_fallback_rate'=>'EUR','try_manual_fallback_rate'=>'TRY','uah_manual_fallback_rate'=>'UAH'];
+        $fields = [
+            'usd_manual_fallback_rate' => 'USD',
+            'eur_manual_fallback_rate' => 'EUR',
+            'try_manual_fallback_rate' => 'TRY',
+            'uah_manual_fallback_rate' => 'UAH',
+        ];
         $changed = [];
         foreach ($fields as $field => $currency) {
-            if (BTL_Helpers::money($old[$field] ?? 0) !== BTL_Helpers::money($new[$field] ?? 0)) $changed[] = $currency;
+            if (BTL_Helpers::money($old[$field] ?? 0) !== BTL_Helpers::money($new[$field] ?? 0)) {
+                $changed[] = $currency;
+            }
         }
-        if ($changed) self::schedule($changed);
+        if ($changed) {
+            self::schedule($changed);
+        }
+
+        if (class_exists('BTL_Price_Engine')) {
+            BTL_Price_Engine::scheduleGlobalDiscountBoundary();
+        }
     }
 
     public static function trigger_mass_update($post_id = null): void
     {
-        if ($post_id === null || in_array($post_id, ['options', 'site-settings'], true)) {
+        if ($post_id === null || $post_id === 'options') {
             return;
         }
 
-        if (is_numeric($post_id) && get_post_type((int) $post_id) === 'product') {
-            $product_id = (int) $post_id;
+        if (is_numeric($post_id) && get_post_type((int)$post_id) === 'product') {
+            $product_id = (int)$post_id;
             if (self::should_reprice_product($product_id)) {
                 BTL_Price_Engine::calculate($product_id, true);
             }
@@ -145,7 +104,7 @@ final class BTL_Scheduler
 
     public static function capture_acf_change($value, $post_id, $field, $original = null): void
     {
-        if (!is_numeric($post_id) || get_post_type((int) $post_id) !== 'product') {
+        if (!is_numeric($post_id) || get_post_type((int)$post_id) !== 'product') {
             return;
         }
 
@@ -164,16 +123,12 @@ final class BTL_Scheduler
         }
 
         $pricing_fields = BTL_Pricing_Fields::acfPricingFields();
-
         $fields = array_values(array_unique(self::$acfChanges[$product_id]));
         if (!$fields) {
             return true;
         }
 
-        // Unknown fields remain conservative for compatibility. Known content-only
-        // fields do not trigger a price calculation at all.
         $known_content_fields = BTL_Pricing_Fields::acfContentFields();
-
         foreach ($fields as $field) {
             if (in_array($field, $pricing_fields, true)) {
                 return true;

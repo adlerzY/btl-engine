@@ -6,7 +6,7 @@ final class BTL_Migrations
     private const OPTION = 'btl_schema_version';
     private const ATTEMPT_OPTION = 'btl_schema_upgrade_attempt';
     private const RETRY_BACKOFF = 900;
-    private const VERSION = 14;
+    private const VERSION = 15;
 
     public static function boot(): void { add_action('init', [self::class, 'maybe_upgrade'], 4); }
     public static function maybe_upgrade(): void
