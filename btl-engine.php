@@ -2,7 +2,7 @@
 
 /**
  * Plugin Name: BTL Engine
- * Version: 1.7.11
+ * Version: 1.7.12
  * Requires PHP: 8.0
  * Requires Plugins: woocommerce, wp-graphql
  */

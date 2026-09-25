@@ -84,6 +84,8 @@ function btl_autoload_core_class(string $class): void
             'BTL_Admin_Login' => 'AdminLogin.php',
             'BTL_Credentials_Auth' => 'CredentialsAuth.php',
             'BTL_Password_Reset' => 'PasswordReset.php',
+            'BTL_Payment_Exception' => 'PaymentGateway.php',
+            'BTL_Payment_Gateway' => 'PaymentGateway.php',
         ];
     }
 
@@ -206,6 +208,7 @@ add_action('btl_cdkey_cleanup_orphans', ['BTL_CdKey_Stock', 'cleanupOrphanReserv
 add_action('btl_cdkey_backfill', ['BTL_CdKey_Stock', 'backfillPendingOrders'], 10, 3);
 add_action('btl_checkout_recovery', ['BTL_Customer_Orders', 'recoverStaleRequests']);
 add_action('graphql_register_types', ['BTL_Customer_Orders', 'register'], 10);
+add_action('rest_api_init', ['BTL_Payment_Gateway', 'register_rest_routes']);
 add_action('transition_post_status', ['BTL_Blog_Follow', 'on_status_change'], 10, 3);
 add_action('graphql_register_types', ['BTL_Blog_Follow', 'register'], 20);
 // Blog ratings GraphQL is loaded only when GraphQL schema registration actually runs.

@@ -119,7 +119,18 @@ final class BTL_Customer_Orders
         $payloadHash = self::payloadHash($validated, $customerNote);
         $reservationToken = wp_generate_password(40, false, false);
         $claim = self::claimRequest($userId, $idemKey, $payloadHash, $reservationToken);
-        if (isset($claim['order'])) return ['order'=>self::orderPayload($claim['order'])];
+        if (isset($claim['order'])) {
+            $existingOrder = $claim['order'];
+            if ($existingOrder instanceof WC_Order && !$existingOrder->is_paid()) {
+                try {
+                    BTL_Payment_Gateway::ensurePayment($existingOrder);
+                } catch (BTL_Payment_Exception $e) {
+                    BTL_Helpers::logger('CustomerOrders: payment initialization failed for existing order ' . (int)$existingOrder->get_id());
+                    throw new GraphQL\Error\UserError('درگاه پرداخت موقتاً در دسترس نیست. لطفاً دوباره تلاش کنید.');
+                }
+            }
+            return ['order'=>self::orderPayload($existingOrder)];
+        }
         $requestId = (int)$claim['id'];
 
         $order = null;
@@ -150,10 +161,18 @@ final class BTL_Customer_Orders
             $order->update_meta_data('_btl_checkout_committed', 'yes');
             $order->update_meta_data('_btl_reservation_token', $reservationToken);
             $order->save();
+
+            try {
+                $paymentUrl = BTL_Payment_Gateway::ensurePayment($order);
+            } catch (BTL_Payment_Exception $e) {
+                BTL_Helpers::logger('CustomerOrders: payment initialization failed for order ' . $orderId . ': ' . $e->getMessage());
+                throw new GraphQL\Error\UserError('درگاه پرداخت موقتاً در دسترس نیست. لطفاً دوباره تلاش کنید.');
+            }
+
             if ($requestId && !self::completeRequest($requestId, $orderId, $reservationToken)) {
                 BTL_Helpers::logger("CustomerOrders: committed order {$orderId} lost idempotency completion claim");
             }
-            return ['order'=>self::orderPayload($order)];
+            return ['order'=>self::orderPayload($order, $paymentUrl)];
         } catch (Throwable $e) {
             if ($orderId > 0) {
                 BTL_CdKey_Stock::releaseReservedForOrder($orderId, $reservationToken);
@@ -356,8 +375,12 @@ final class BTL_Customer_Orders
         if((string)$row->state==='completed' && $row->order_id){$order=wc_get_order((int)$row->order_id);if($order)return ['order'=>$order];}
         if($inserted===0 && (string)$row->state==='processing') {
             $cutoff = gmdate('Y-m-d H:i:s', time() - 600);
-            if(strtotime((string)$row->updated_at)>time()-600) throw new GraphQL\Error\UserError('این سفارش در حال ثبت است.');
             $oldOrder=$row->order_id?wc_get_order((int)$row->order_id):false;
+            if($oldOrder && $oldOrder->get_meta('_btl_checkout_committed')==='yes' && BTL_Payment_Gateway::storedPaymentUrl($oldOrder)!==''){
+                self::completeRequest((int)$row->id,(int)$row->order_id,(string)$row->reservation_token);
+                return ['order'=>$oldOrder];
+            }
+            if(strtotime((string)$row->updated_at)>time()-600) throw new GraphQL\Error\UserError('این سفارش در حال ثبت است.');
             if($oldOrder && $oldOrder->get_meta('_btl_checkout_committed')==='yes'){
                 self::completeRequest((int)$row->id,(int)$row->order_id,(string)$row->reservation_token);
                 return ['order'=>$oldOrder];
@@ -472,7 +495,24 @@ final class BTL_Customer_Orders
             current_time('mysql',true), $id, $token
         ));
     }
-    private static function orderPayload(WC_Order $order): array { return ['databaseId'=>$order->get_id(),'orderKey'=>$order->get_order_key(),'orderNumber'=>$order->get_order_number(),'total'=>$order->get_total(),'status'=>strtoupper($order->get_status()),'paymentUrl'=>$order->get_checkout_payment_url()]; }
+    private static function orderPayload(WC_Order $order, ?string $paymentUrl = null): array
+    {
+        if ($paymentUrl === null) {
+            $paymentUrl = BTL_Payment_Gateway::storedPaymentUrl($order);
+            if ($paymentUrl === '' && !$order->is_paid()) {
+                $paymentUrl = $order->get_checkout_payment_url();
+            }
+        }
+
+        return [
+            'databaseId' => $order->get_id(),
+            'orderKey' => $order->get_order_key(),
+            'orderNumber' => $order->get_order_number(),
+            'total' => $order->get_total(),
+            'status' => strtoupper($order->get_status()),
+            'paymentUrl' => $paymentUrl,
+        ];
+    }
     private static function variationRegionValue(WC_Product $product): ?string
     {
         if (!$product->is_type('variation')) return null;
