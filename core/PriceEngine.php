@@ -43,6 +43,7 @@ final class BTL_Price_Engine
         ?array $currencies = null
     ): bool {
         $pinned_id = 0;
+        $guard_id = 0;
 
         try {
             $product = wc_get_product(
@@ -145,8 +146,6 @@ final class BTL_Price_Engine
             if ($changed) {
                 clean_post_cache($product_id);
 
-                // Skipped inside a batch: the scheduler flushes the product
-                // transient group once per worker instead of once per product.
                 if (
                     function_exists('wc_delete_product_transients')
                     && !(
@@ -185,9 +184,9 @@ final class BTL_Price_Engine
                 BTL_Invalidation::unpin_scope($pinned_id);
             }
 
-            unset(
-                self::$running[$guard_id]
-            );
+            if ($guard_id > 0) {
+                unset(self::$running[$guard_id]);
+            }
         }
     }
     private static function normalize_currencies(?array $currencies): ?array
@@ -213,12 +212,13 @@ final class BTL_Price_Engine
     ): bool {
         $region = BTL_Region_Registry::fromVariation($variation);
         $currency = $region['currency'] ?? null;
-        if ($region === null || $currency === null) {
-            // Region is the sole source of truth for pricing currency.
-            // Never guess currency from legacy metadata.
+
+        if ($region === null || $currency === null || trim((string)$currency) === '') {
             return false;
         }
-        $rate = $currency !== null && isset($rates[$currency]) ? (float)$rates[$currency] : null;
+
+        $currency = strtoupper((string)$currency);
+        $rate = isset($rates[$currency]) ? (float)$rates[$currency] : null;
         $base = self::priceValue($variation->get_meta('base_foreign_price'));
         $gameDiscount = self::effectiveVariationDiscount($variation, 'game', $base);
         $commissionDiscount = self::effectiveVariationDiscount($variation, 'commission');
@@ -226,13 +226,15 @@ final class BTL_Price_Engine
 
         $regularPrice = null;
         $activePrice = null;
+
         if ($base !== null && $rate !== null && $rate > 0) {
-            $converted = $base * $rate;
-            $commission = $converted * ($globalCommission / 100);
-            $effectiveCommission = $commission * (1 - ($commissionDiscount / 100));
-            $regularPrice = (int) round($converted + $commission);
-            $discountedBase = self::applyDiscount($converted, $gameDiscount);
-            $activePrice = (int) round($discountedBase + $effectiveCommission);
+            [$regularPrice, $activePrice] = self::foreignToToman(
+                $base,
+                $rate,
+                $globalCommission,
+                $gameDiscount,
+                $commissionDiscount
+            );
         }
 
         $dirty = self::sync_prices(
@@ -242,11 +244,25 @@ final class BTL_Price_Engine
             $activePrice
         );
 
-        $dirty |= self::syncDelivery($variation, 'gift', $gameDiscount, $rate);
-        $dirty |= self::syncDelivery($variation, 'code', $gameDiscount, $rate);
+        $dirty |= self::syncDelivery(
+            $variation,
+            'gift',
+            $gameDiscount,
+            $commissionDiscount,
+            $globalCommission,
+            $rate
+        );
+        $dirty |= self::syncDelivery(
+            $variation,
+            'code',
+            $gameDiscount,
+            $commissionDiscount,
+            $globalCommission,
+            $rate
+        );
         $dirty |= self::meta($variation, '_btl_pricing_region', $region['region'] ?? '');
-        $dirty |= self::meta($variation, '_btl_pricing_currency', $currency ?? '');
-        $dirty |= self::meta($variation, '_btl_rate_source', $currency !== null ? self::rateSource($currency) : 'unavailable');
+        $dirty |= self::meta($variation, '_btl_pricing_currency', $currency);
+        $dirty |= self::meta($variation, '_btl_rate_source', self::rateSource($currency));
 
         if ($dirty) {
             $variation->save();
@@ -254,6 +270,22 @@ final class BTL_Price_Engine
         }
 
         return false;
+    }
+
+    private static function foreignToToman(
+        float $foreign,
+        float $rate,
+        float $commissionPercent,
+        float $gameDiscount,
+        float $commissionDiscount
+    ): array {
+        $converted = $foreign * $rate;
+        $commission = $converted * ($commissionPercent / 100);
+        $effectiveCommission = $commission * (1 - ($commissionDiscount / 100));
+        $regular = (int) round($converted + $commission);
+        $active = (int) round(self::applyDiscount($converted, $gameDiscount) + $effectiveCommission);
+
+        return [$regular, $active];
     }
 
     private static function variationCurrency(WC_Product $variation): ?string
@@ -306,33 +338,53 @@ final class BTL_Price_Engine
         return $dirty;
     }
 
-    private static function syncDelivery(WC_Product $product, string $method, float $gameDiscount, ?float $rate): bool
-    {
+    private static function syncDelivery(
+        WC_Product $product,
+        string $method,
+        float $gameDiscount,
+        float $commissionDiscount,
+        float $globalCommission,
+        ?float $rate
+    ): bool {
         $newKey = $method === 'gift' ? '_btl_gift_price' : '_btl_code_price';
         $finalKey = $method === 'gift' ? '_btl_gift_final_price' : '_btl_code_final_price';
         $regularKey = $method === 'gift' ? '_btl_gift_regular_price' : '_btl_code_regular_price';
 
         $rawNewPrice = $product->get_meta($newKey);
-        $price = self::priceValue($rawNewPrice);
+        $foreign = self::priceValue($rawNewPrice);
+        $legacyToman = null;
 
-        if ($price === null && trim((string)$rawNewPrice) === '') {
-            $pending = self::legacyPendingMethods($product);
-            if (in_array($method, $pending, true)) {
+        if ($foreign === null && trim((string)$rawNewPrice) === '') {
+            if (in_array($method, self::legacyPendingMethods($product), true)) {
                 $legacyKey = $method === 'gift' ? '_gift_price_toman' : '_code_price_toman';
-                $legacyPrice = self::priceValue($product->get_meta($legacyKey));
-                if ($legacyPrice !== null) {
-                    $price = $legacyPrice;
-                }
+                $legacyToman = self::priceValue($product->get_meta($legacyKey));
             }
         }
 
-        if ($price === null) {
+        $regular = null;
+        $final = null;
+
+        if ($foreign !== null) {
+            if ($rate !== null && $rate > 0) {
+                [$regular, $final] = self::foreignToToman(
+                    $foreign,
+                    $rate,
+                    $globalCommission,
+                    $gameDiscount,
+                    $commissionDiscount
+                );
+            }
+        } elseif ($legacyToman !== null) {
+            $regular = (int) round($legacyToman);
+            $final = self::applyDiscount($regular, $gameDiscount);
+        }
+
+        if ($regular === null || $final === null) {
             return self::meta($product, $finalKey, 'disabled')
                 | self::meta($product, $regularKey, 'disabled');
         }
 
-        $regular = (int) round($price);
-        return self::meta($product, $finalKey, self::applyDiscount($regular, $gameDiscount))
+        return self::meta($product, $finalKey, $final)
             | self::meta($product, $regularKey, $regular);
     }
 
