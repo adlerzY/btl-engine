@@ -345,10 +345,10 @@ final class BTL_Customer_Orders
 
     private static function credential(string $type, string $value): string
     {
-        $value = trim(wp_unslash($value));
-        if ($value === '' || strlen($value) > 512 || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $value)) return '';
-        if ($type === 'email' && !is_email($value)) return '';
-        return $value;
+        $clean = $type === 'password' ? $value : trim($value);
+        if (trim($clean) === '' || strlen($clean) > 512 || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $clean)) return '';
+        if ($type === 'email' && !is_email($clean)) return '';
+        return $clean;
     }
     private static function idempotencyKey(array $input): string
     {
