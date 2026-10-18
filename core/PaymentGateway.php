@@ -11,14 +11,15 @@ interface BTL_Payment_Provider
     public function minToman(): int;
     public function maxToman(): int;
     public function reuseSeconds(): int;
-    public function create(WC_Order $order, int $amountToman, string $callbackUrl): array;
+    public function create(WC_Order $order, int $amountToman, string $callbackUrl, int $timeout = 8): array;
     public function readCallback(WP_REST_Request $request): array;
     public function verify(string $trace, int $amountToman): array;
 }
 
 abstract class BTL_Payment_Provider_Base implements BTL_Payment_Provider
 {
-    protected const TIMEOUT = 15;
+    protected const VERIFY_TIMEOUT = 15;
+    protected const USER_AGENT = 'Arena2Battle-Payments/1.0';
 
     protected static function setting(string $name): string
     {
@@ -40,23 +41,53 @@ abstract class BTL_Payment_Provider_Base implements BTL_Payment_Provider
         return strlen($value) <= 255 ? $value : substr($value, 0, 255);
     }
 
-    protected static function post(string $url, array $args): ?array
+    protected static function post(string $url, array $args, int $timeout, int $attempts = 1): array
     {
-        $response = wp_remote_post($url, array_merge([
-            'timeout' => self::TIMEOUT,
-            'redirection' => 0,
-        ], $args));
+        $attempts = max(1, $attempts);
+        $response = null;
 
-        if (is_wp_error($response)) {
-            return null;
+        for ($i = 1; $i <= $attempts; $i++) {
+            $response = wp_remote_post($url, array_merge([
+                'timeout' => max(2, $timeout),
+                'redirection' => 0,
+                'user-agent' => self::USER_AGENT,
+            ], $args));
+
+            if (!is_wp_error($response)) {
+                break;
+            }
+
+            if ($i < $attempts) {
+                usleep(300000);
+            }
         }
 
-        $decoded = json_decode((string) wp_remote_retrieve_body($response), true);
+        if (is_wp_error($response)) {
+            return [
+                'transport' => false,
+                'code' => 0,
+                'json' => null,
+                'raw' => '',
+                'error' => $response->get_error_code() . ' ' . $response->get_error_message(),
+            ];
+        }
+
+        $raw = (string) wp_remote_retrieve_body($response);
+        $decoded = json_decode($raw, true);
 
         return [
+            'transport' => true,
             'code' => (int) wp_remote_retrieve_response_code($response),
             'json' => is_array($decoded) ? $decoded : null,
+            'raw' => $raw,
+            'error' => '',
         ];
+    }
+
+    protected static function snippet(string $raw): string
+    {
+        $text = trim((string) preg_replace('/\s+/', ' ', wp_strip_all_tags($raw)));
+        return $text === '' ? '(empty body)' : substr($text, 0, 200);
     }
 
     protected static function log(string $context, string $reason): void
@@ -77,7 +108,7 @@ final class BTL_Aqayepardakht_Provider extends BTL_Payment_Provider_Base
     public function maxToman(): int { return 99999999; }
     public function reuseSeconds(): int { return 1800; }
 
-    public function create(WC_Order $order, int $amountToman, string $callbackUrl): array
+    public function create(WC_Order $order, int $amountToman, string $callbackUrl, int $timeout = 8): array
     {
         $body = [
             'pin' => self::setting('BTL_AQAYEPARDAKHT_PIN'),
@@ -100,16 +131,16 @@ final class BTL_Aqayepardakht_Provider extends BTL_Payment_Provider_Base
         $result = self::post(self::API_BASE . 'pay', [
             'headers' => ['Accept' => 'application/json'],
             'body' => $body,
-        ]);
+        ], $timeout);
 
-        if ($result === null) {
-            self::log('Aqayepardakht create', 'http_error order ' . $order->get_id());
-            throw new BTL_Payment_Exception('aqayepardakht_create_http_error');
+        if (!$result['transport']) {
+            self::log('Aqayepardakht create', 'transport_error order ' . $order->get_id() . ' — ' . $result['error']);
+            throw new BTL_Payment_Exception('aqayepardakht_create_transport_error');
         }
 
         $decoded = $result['json'];
         if (!is_array($decoded)) {
-            self::log('Aqayepardakht create', 'invalid_json_' . $result['code'] . ' order ' . $order->get_id());
+            self::log('Aqayepardakht create', 'invalid_json_http_' . $result['code'] . ' order ' . $order->get_id() . ' — ' . self::snippet($result['raw']));
             throw new BTL_Payment_Exception('aqayepardakht_create_invalid_response');
         }
 
@@ -118,7 +149,7 @@ final class BTL_Aqayepardakht_Provider extends BTL_Payment_Provider_Base
 
         if ($status === 'error' || $trace === '') {
             $message = trim((string) ($decoded['message'] ?? $decoded['error'] ?? ''));
-            self::log('Aqayepardakht create', ($message !== '' ? substr($message, 0, 180) : 'provider_error_' . $result['code']) . ' order ' . $order->get_id());
+            self::log('Aqayepardakht create', 'provider_error_http_' . $result['code'] . ' ' . ($message !== '' ? substr($message, 0, 180) : self::snippet($result['raw'])) . ' order ' . $order->get_id());
             throw new BTL_Payment_Exception('aqayepardakht_create_provider_error');
         }
 
@@ -156,15 +187,15 @@ final class BTL_Aqayepardakht_Provider extends BTL_Payment_Provider_Base
                 'tracking_code' => $trace,
                 'amount' => $amountToman,
             ],
-        ]);
+        ], self::VERIFY_TIMEOUT, 2);
 
-        if ($result === null) {
-            return ['ok' => false, 'reference' => '', 'reason' => 'verify_http_error'];
+        if (!$result['transport']) {
+            return ['ok' => false, 'reference' => '', 'reason' => 'verify_transport_error ' . $result['error']];
         }
 
         $decoded = $result['json'];
         if (!is_array($decoded)) {
-            return ['ok' => false, 'reference' => '', 'reason' => 'verify_invalid_json_' . $result['code']];
+            return ['ok' => false, 'reference' => '', 'reason' => 'verify_invalid_json_http_' . $result['code'] . ' ' . self::snippet($result['raw'])];
         }
 
         $status = strtolower(trim((string) ($decoded['status'] ?? '')));
@@ -196,7 +227,7 @@ final class BTL_Zarinpal_Provider extends BTL_Payment_Provider_Base
             : 'https://payment.zarinpal.com';
     }
 
-    public function create(WC_Order $order, int $amountToman, string $callbackUrl): array
+    public function create(WC_Order $order, int $amountToman, string $callbackUrl, int $timeout = 8): array
     {
         $payload = [
             'merchant_id' => self::setting('BTL_ZARINPAL_MERCHANT_ID'),
@@ -211,7 +242,7 @@ final class BTL_Zarinpal_Provider extends BTL_Payment_Provider_Base
             $metadata['mobile'] = $mobile;
         }
         $email = sanitize_email((string) $order->get_billing_email());
-        if ($email !== '') {
+        if ($email !== '' && !str_ends_with(strtolower($email), '.local')) {
             $metadata['email'] = $email;
         }
         if ($metadata) {
@@ -221,16 +252,16 @@ final class BTL_Zarinpal_Provider extends BTL_Payment_Provider_Base
         $result = self::post($this->host() . '/pg/v4/payment/request.json', [
             'headers' => ['Content-Type' => 'application/json', 'Accept' => 'application/json'],
             'body' => wp_json_encode($payload),
-        ]);
+        ], $timeout);
 
-        if ($result === null) {
-            self::log('Zarinpal create', 'http_error order ' . $order->get_id());
-            throw new BTL_Payment_Exception('zarinpal_create_http_error');
+        if (!$result['transport']) {
+            self::log('Zarinpal create', 'transport_error order ' . $order->get_id() . ' — ' . $result['error']);
+            throw new BTL_Payment_Exception('zarinpal_create_transport_error');
         }
 
         $decoded = $result['json'];
         if (!is_array($decoded)) {
-            self::log('Zarinpal create', 'invalid_json_' . $result['code'] . ' order ' . $order->get_id());
+            self::log('Zarinpal create', 'invalid_json_http_' . $result['code'] . ' order ' . $order->get_id() . ' — ' . self::snippet($result['raw']));
             throw new BTL_Payment_Exception('zarinpal_create_invalid_response');
         }
 
@@ -242,8 +273,9 @@ final class BTL_Zarinpal_Provider extends BTL_Payment_Provider_Base
             $errors = is_array($decoded['errors'] ?? null) ? $decoded['errors'] : [];
             $errorCode = (string) ($errors['code'] ?? $code);
             $errorMessage = (string) ($errors['message'] ?? '');
-            self::log('Zarinpal create', 'code_' . $errorCode . ' ' . substr($errorMessage, 0, 120) . ' order ' . $order->get_id());
-            throw new BTL_Payment_Exception('zarinpal_create_provider_error');
+            $validations = isset($errors['validations']) ? wp_json_encode($errors['validations'], JSON_UNESCAPED_UNICODE) : '';
+            self::log('Zarinpal create', 'provider_error http_' . $result['code'] . ' code_' . $errorCode . ' ' . substr($errorMessage, 0, 120) . ' ' . substr((string) $validations, 0, 200) . ' order ' . $order->get_id());
+            throw new BTL_Payment_Exception('zarinpal_create_provider_error_' . $errorCode);
         }
 
         return ['trace' => $authority, 'url' => $this->host() . '/pg/StartPay/' . rawurlencode($authority)];
@@ -269,15 +301,15 @@ final class BTL_Zarinpal_Provider extends BTL_Payment_Provider_Base
                 'amount' => $amountToman * 10,
                 'authority' => $trace,
             ]),
-        ]);
+        ], self::VERIFY_TIMEOUT, 2);
 
-        if ($result === null) {
-            return ['ok' => false, 'reference' => '', 'reason' => 'verify_http_error'];
+        if (!$result['transport']) {
+            return ['ok' => false, 'reference' => '', 'reason' => 'verify_transport_error ' . $result['error']];
         }
 
         $decoded = $result['json'];
         if (!is_array($decoded)) {
-            return ['ok' => false, 'reference' => '', 'reason' => 'verify_invalid_json_' . $result['code']];
+            return ['ok' => false, 'reference' => '', 'reason' => 'verify_invalid_json_http_' . $result['code'] . ' ' . self::snippet($result['raw'])];
         }
 
         $data = is_array($decoded['data'] ?? null) ? $decoded['data'] : [];
@@ -310,6 +342,7 @@ final class BTL_Payment_Gateway
     private const VERIFY_LOCK_TTL = 60;
     private const DEAD_STATUSES = ['cancelled', 'refunded', 'trash'];
     private const MAX_TRACES_PER_PROVIDER = 10;
+    private const CREATE_BUDGET = 9;
 
     private static ?array $providers = null;
 
@@ -380,6 +413,25 @@ final class BTL_Payment_Gateway
         }
 
         return $enabled[$id];
+    }
+
+    private static function orderedProviders(): array
+    {
+        $enabled = self::enabled();
+        $default = self::defaultId();
+        $ordered = [];
+
+        if ($default !== '' && isset($enabled[$default])) {
+            $ordered[] = $enabled[$default];
+        }
+
+        foreach ($enabled as $id => $provider) {
+            if ($id !== $default) {
+                $ordered[] = $provider;
+            }
+        }
+
+        return $ordered;
     }
 
     public static function register_rest_routes(): void
@@ -460,40 +512,86 @@ final class BTL_Payment_Gateway
             return $legacyUrl;
         }
 
-        $provider = self::resolve($requested ?? ($storedProvider !== '' ? $storedProvider : null));
-        $amount = self::amountToman($order, $provider);
+        $preferred = $requested ?? ($storedProvider !== '' ? $storedProvider : null);
+        $providers = $preferred !== null ? [self::resolve($preferred)] : self::orderedProviders();
 
-        $storedUrl = trim((string) $order->get_meta(self::META_URL));
-        $createdAt = (int) $order->get_meta(self::META_CREATED);
-
-        if (
-            $storedProvider === $provider->id()
-            && $storedUrl !== ''
-            && (int) $order->get_meta(self::META_AMOUNT) === $amount
-            && $createdAt > 0
-            && (time() - $createdAt) < $provider->reuseSeconds()
-        ) {
-            return $storedUrl;
+        if (!$providers) {
+            BTL_Helpers::logger('Payment: no enabled provider (check BTL_PAYMENT_GATEWAYS / merchant constants in wp-config.php before wp-settings.php) order ' . (int) $order->get_id());
+            throw new BTL_Payment_Exception('payment_gateway_unavailable');
         }
 
-        $payment = $provider->create($order, $amount, self::callbackUrl($provider, $order));
+        $started = microtime(true);
+        $total = count($providers);
+        $lastError = null;
 
-        $traces = self::traces($order);
-        $list = $traces[$provider->id()] ?? [];
-        $list[] = $payment['trace'];
-        $traces[$provider->id()] = array_values(array_unique(array_slice($list, -self::MAX_TRACES_PER_PROVIDER)));
+        foreach ($providers as $index => $provider) {
+            $remaining = (int) floor(self::CREATE_BUDGET - (microtime(true) - $started));
+            if ($index > 0 && $remaining < 2) {
+                break;
+            }
 
-        $order->set_payment_method('btl_' . $provider->id());
-        $order->set_payment_method_title($provider->label());
-        $order->set_transaction_id($payment['trace']);
-        $order->update_meta_data(self::META_PROVIDER, $provider->id());
-        $order->update_meta_data(self::META_URL, $payment['url']);
-        $order->update_meta_data(self::META_AMOUNT, (string) $amount);
-        $order->update_meta_data(self::META_CREATED, (string) time());
-        $order->update_meta_data(self::META_TRACES, $traces);
-        $order->save();
+            try {
+                $amount = self::amountToman($order, $provider);
+            } catch (BTL_Payment_Exception $e) {
+                $lastError = $e;
+                BTL_Helpers::logger(sprintf(
+                    'Payment %s skipped for order %d: %s (total %s)',
+                    $provider->id(),
+                    (int) $order->get_id(),
+                    $e->getMessage(),
+                    (string) $order->get_total()
+                ));
+                continue;
+            }
 
-        return $payment['url'];
+            $storedUrl = trim((string) $order->get_meta(self::META_URL));
+            $createdAt = (int) $order->get_meta(self::META_CREATED);
+
+            if (
+                $storedProvider === $provider->id()
+                && $storedUrl !== ''
+                && (int) $order->get_meta(self::META_AMOUNT) === $amount
+                && $createdAt > 0
+                && (time() - $createdAt) < $provider->reuseSeconds()
+            ) {
+                return $storedUrl;
+            }
+
+            $timeout = $index < $total - 1 ? min(5, max(2, $remaining)) : max(2, $remaining);
+
+            try {
+                $payment = $provider->create($order, $amount, self::callbackUrl($provider, $order), $timeout);
+            } catch (BTL_Payment_Exception $e) {
+                $lastError = $e;
+                BTL_Helpers::logger(sprintf(
+                    'Payment %s create failed for order %d: %s%s',
+                    $provider->id(),
+                    (int) $order->get_id(),
+                    $e->getMessage(),
+                    $index < $total - 1 ? ' — trying next provider' : ''
+                ));
+                continue;
+            }
+
+            $traces = self::traces($order);
+            $list = $traces[$provider->id()] ?? [];
+            $list[] = $payment['trace'];
+            $traces[$provider->id()] = array_values(array_unique(array_slice($list, -self::MAX_TRACES_PER_PROVIDER)));
+
+            $order->set_payment_method('btl_' . $provider->id());
+            $order->set_payment_method_title($provider->label());
+            $order->set_transaction_id($payment['trace']);
+            $order->update_meta_data(self::META_PROVIDER, $provider->id());
+            $order->update_meta_data(self::META_URL, $payment['url']);
+            $order->update_meta_data(self::META_AMOUNT, (string) $amount);
+            $order->update_meta_data(self::META_CREATED, (string) time());
+            $order->update_meta_data(self::META_TRACES, $traces);
+            $order->save();
+
+            return $payment['url'];
+        }
+
+        throw $lastError ?? new BTL_Payment_Exception('payment_gateway_unavailable');
     }
 
     public static function storedPaymentUrl(WC_Order $order): string
