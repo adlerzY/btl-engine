@@ -367,41 +367,74 @@ final class BTL_Customer_Orders
     }
     private static function claimRequest(int $userId, string $key, string $hash, string $attemptToken): array
     {
-        global $wpdb; $table=self::table(); $now=current_time('mysql', true);
-        $inserted=$wpdb->query($wpdb->prepare("INSERT IGNORE INTO {$table} (customer_id,idempotency_key,payload_hash,state,reservation_token,created_at,updated_at) VALUES (%d,%s,%s,'processing',%s,%s,%s)",$userId,$key,$hash,$attemptToken,$now,$now));
-        $row=$wpdb->get_row($wpdb->prepare("SELECT * FROM {$table} WHERE customer_id=%d AND idempotency_key=%s",$userId,$key));
-        if(!$row) throw new GraphQL\Error\UserError('امکان ثبت درخواست وجود ندارد.');
-        if(!hash_equals((string)$row->payload_hash,$hash)) throw new GraphQL\Error\UserError('کلید تکرار برای درخواست متفاوت استفاده شده است.');
-        if((string)$row->state==='completed' && $row->order_id){$order=wc_get_order((int)$row->order_id);if($order)return ['order'=>$order];}
-        if($inserted===0 && (string)$row->state==='processing') {
+        global $wpdb;
+        $table = self::table();
+        $now = current_time('mysql', true);
+
+        $inserted = (int) $wpdb->query($wpdb->prepare(
+            "INSERT IGNORE INTO {$table} (customer_id,idempotency_key,payload_hash,state,reservation_token,created_at,updated_at) VALUES (%d,%s,%s,'processing',%s,%s,%s)",
+            $userId, $key, $hash, $attemptToken, $now, $now
+        ));
+
+        $row = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$table} WHERE customer_id=%d AND idempotency_key=%s",
+            $userId, $key
+        ));
+        if (!$row) {
+            throw new GraphQL\Error\UserError('امکان ثبت درخواست وجود ندارد.');
+        }
+
+        if ($inserted === 1) {
+            return ['id' => (int) $row->id];
+        }
+
+        if (!hash_equals((string) $row->payload_hash, $hash)) {
+            throw new GraphQL\Error\UserError('کلید تکرار برای درخواست متفاوت استفاده شده است.');
+        }
+
+        if ((string) $row->state === 'completed' && $row->order_id) {
+            $order = wc_get_order((int) $row->order_id);
+            if ($order) return ['order' => $order];
+        }
+
+        if ((string) $row->state === 'processing') {
             $cutoff = gmdate('Y-m-d H:i:s', time() - 600);
-            $oldOrder=$row->order_id?wc_get_order((int)$row->order_id):false;
-            if($oldOrder && $oldOrder->get_meta('_btl_checkout_committed')==='yes' && BTL_Payment_Gateway::storedPaymentUrl($oldOrder)!==''){
-                self::completeRequest((int)$row->id,(int)$row->order_id,(string)$row->reservation_token);
-                return ['order'=>$oldOrder];
+            $oldOrder = $row->order_id ? wc_get_order((int) $row->order_id) : false;
+
+            if ($oldOrder && $oldOrder->get_meta('_btl_checkout_committed') === 'yes' && BTL_Payment_Gateway::storedPaymentUrl($oldOrder) !== '') {
+                self::completeRequest((int) $row->id, (int) $row->order_id, (string) $row->reservation_token);
+                return ['order' => $oldOrder];
             }
-            if(strtotime((string)$row->updated_at)>time()-600) throw new GraphQL\Error\UserError('این سفارش در حال ثبت است.');
-            if($oldOrder && $oldOrder->get_meta('_btl_checkout_committed')==='yes'){
-                self::completeRequest((int)$row->id,(int)$row->order_id,(string)$row->reservation_token);
-                return ['order'=>$oldOrder];
+            if (strtotime((string) $row->updated_at) > time() - 600) {
+                throw new GraphQL\Error\UserError('این سفارش در حال ثبت است.');
             }
-            if($oldOrder && !in_array($oldOrder->get_status(),['pending','checkout-draft'],true)) {
+            if ($oldOrder && $oldOrder->get_meta('_btl_checkout_committed') === 'yes') {
+                self::completeRequest((int) $row->id, (int) $row->order_id, (string) $row->reservation_token);
+                return ['order' => $oldOrder];
+            }
+            if ($oldOrder && !in_array($oldOrder->get_status(), ['pending', 'checkout-draft'], true)) {
                 throw new GraphQL\Error\UserError('سفارش قبلی نیازمند بررسی پشتیبانی است.');
             }
-            $oldReservationToken=(string)$row->reservation_token;
+
+            $oldReservationToken = (string) $row->reservation_token;
             $claimed = $wpdb->query($wpdb->prepare(
                 "UPDATE {$table} SET state='processing',order_id=NULL,reservation_token=%s,updated_at=%s
                  WHERE id=%d AND state='processing' AND updated_at<%s",
-                $attemptToken, $now, (int)$row->id, $cutoff
+                $attemptToken, $now, (int) $row->id, $cutoff
             ));
-            if((int)$claimed !== 1) throw new GraphQL\Error\UserError('این سفارش در حال ثبت است.');
-            if($row->order_id){
-                BTL_CdKey_Stock::releaseReservedForOrder((int)$row->order_id,$oldReservationToken);
-                BTL_Secure_Fields::deleteByOrder((int)$row->order_id);
-                if($oldOrder){try{$oldOrder->delete(true);}catch(Throwable $ignored){}}
+            if ((int) $claimed !== 1) {
+                throw new GraphQL\Error\UserError('این سفارش در حال ثبت است.');
             }
-            return ['id'=>(int)$row->id];
+            if ($row->order_id) {
+                BTL_CdKey_Stock::releaseReservedForOrder((int) $row->order_id, $oldReservationToken);
+                BTL_Secure_Fields::deleteByOrder((int) $row->order_id);
+                if ($oldOrder) {
+                    try { $oldOrder->delete(true); } catch (Throwable $ignored) {}
+                }
+            }
+            return ['id' => (int) $row->id];
         }
+
         $claimed = $wpdb->query($wpdb->prepare(
             "UPDATE {$table} SET state='processing',order_id=NULL,reservation_token=%s,updated_at=%s WHERE id=%d AND state='failed'",
             $attemptToken,
@@ -411,7 +444,7 @@ final class BTL_Customer_Orders
         if ((int) $claimed !== 1) {
             throw new GraphQL\Error\UserError('این سفارش هم‌زمان در حال ثبت یا پردازش است.');
         }
-        return ['id'=>(int)$row->id];
+        return ['id' => (int) $row->id];
     }
     public static function recoverStaleRequests(): void
     {
