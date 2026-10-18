@@ -49,10 +49,16 @@ final class BTL_Customer_Tickets
 
                 $status = trim((string)($args['status'] ?? ''));
                 if ($status !== '' && $status !== 'ALL') {
+                    $statusGroups = [
+                        'open' => ['open', 'claimed', 'waiting_staff'],
+                        'answered' => ['answered', 'waiting_user'],
+                        'closed' => ['closed', 'resolved'],
+                    ];
+                    $statusKey = sanitize_key($status);
                     $metaQuery[] = [
                         'key' => 'ticket_status',
-                        'value' => sanitize_key($status),
-                        'compare' => '=',
+                        'value' => $statusGroups[$statusKey] ?? [$statusKey],
+                        'compare' => 'IN',
                     ];
                 }
 

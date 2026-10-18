@@ -205,19 +205,36 @@ final class BTL_Sessions
     public static function touch(int $userId, string $sessionId): void
     {
         global $wpdb;
+        $table = self::table();
         $tokenHash = self::currentTokenHash();
         $previousTokenHash = self::previousTokenHash();
         $now = current_time('mysql', true);
-        $expectedTokenHash = $previousTokenHash !== '' ? $previousTokenHash : $tokenHash;
-        if ($userId < 1 || $tokenHash === '' || !self::sessionExists($userId, $sessionId, true, $expectedTokenHash)) {
+
+        if ($userId < 1 || $sessionId === '' || $tokenHash === '') {
             throw new RuntimeException('session_binding_rejected');
         }
+
+        if (self::sessionExists($userId, $sessionId, true, $tokenHash)) {
+            $wpdb->query($wpdb->prepare(
+                "UPDATE {$table} SET last_active=%s WHERE user_id=%d AND session_id=%s AND token_hash=%s AND revoked=0",
+                $now, $userId, $sessionId, $tokenHash
+            ));
+            self::clearRequestSessionCache();
+            return;
+        }
+
+        if ($previousTokenHash === '' || !self::sessionExists($userId, $sessionId, true, $previousTokenHash)) {
+            throw new RuntimeException('session_binding_rejected');
+        }
+
         $updated = $wpdb->query($wpdb->prepare(
-            "UPDATE " . self::table() . " SET token_hash=%s,last_active=%s
+            "UPDATE {$table} SET token_hash=%s,last_active=%s
              WHERE user_id=%d AND session_id=%s AND token_hash=%s AND revoked=0",
-            $tokenHash, $now, $userId, $sessionId, $expectedTokenHash
+            $tokenHash, $now, $userId, $sessionId, $previousTokenHash
         ));
-        if ($updated === false || $updated < 1) throw new RuntimeException('session_touch_failed');
+        if ($updated === false || $updated < 1) {
+            throw new RuntimeException('session_touch_failed');
+        }
         self::clearRequestSessionCache();
     }
 

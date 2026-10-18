@@ -1400,7 +1400,13 @@ final class BTL_GraphQL
             'type' => 'String',
             'resolve' => static function ($ticket) {
                 self::assertTicketViewer((int) $ticket->databaseId);
-                return get_post_meta($ticket->databaseId, 'ticket_status', true) ?: 'open';
+                $raw = sanitize_key((string) get_post_meta($ticket->databaseId, 'ticket_status', true)) ?: 'open';
+
+                return match ($raw) {
+                    'answered', 'waiting_user' => 'answered',
+                    'closed', 'resolved' => 'closed',
+                    default => 'open',
+                };
             },
         ]);
 

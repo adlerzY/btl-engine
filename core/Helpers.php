@@ -176,6 +176,9 @@ final class BTL_Helpers
 
     public static function clientIp(): string
     {
+        $forwarded = self::verifiedForwardedIp();
+        if ($forwarded !== null) return $forwarded;
+
         $remote = self::validIp($_SERVER['REMOTE_ADDR'] ?? '');
         $trustedProxy = false;
 
@@ -204,6 +207,18 @@ final class BTL_Helpers
         }
 
         return $remote ?: 'unknown';
+    }
+
+    private static function verifiedForwardedIp(): ?string
+    {
+        if (!defined('BTL_SESSION_BINDING_SECRET') || BTL_SESSION_BINDING_SECRET === '') return null;
+
+        $ip = self::validIp($_SERVER['HTTP_X_BTL_CLIENT_IP'] ?? '');
+        $proof = (string) ($_SERVER['HTTP_X_BTL_CLIENT_IP_PROOF'] ?? '');
+        if ($ip === null || $proof === '') return null;
+
+        $expected = hash_hmac('sha256', 'client-ip.' . $ip, BTL_SESSION_BINDING_SECRET);
+        return hash_equals($expected, $proof) ? $ip : null;
     }
 
     private static function validIp($value): ?string
