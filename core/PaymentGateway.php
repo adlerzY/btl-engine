@@ -215,7 +215,7 @@ final class BTL_Zarinpal_Provider extends BTL_Payment_Provider_Base
     public function id(): string { return 'zarinpal'; }
     public function label(): string { return 'زرین‌پال'; }
     public function isConfigured(): bool { return (bool) preg_match('/^[A-Za-z0-9-]{36}$/', self::setting('BTL_ZARINPAL_MERCHANT_ID')); }
-    public function minToman(): int { return 1000; }
+    public function minToman(): int { return 1500; }
     public function maxToman(): int { return 100000000; }
     public function reuseSeconds(): int { return 900; }
 
