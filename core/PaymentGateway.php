@@ -227,6 +227,21 @@ final class BTL_Zarinpal_Provider extends BTL_Payment_Provider_Base
             : 'https://payment.zarinpal.com';
     }
 
+    private function startPayBase(): string
+    {
+        $sandbox = strtolower(self::setting('BTL_ZARINPAL_SANDBOX'));
+        if (in_array($sandbox, ['1', 'true', 'yes'], true)) {
+            return 'https://sandbox.zarinpal.com';
+        }
+
+        $domain = strtolower(self::setting('BTL_ZARINPAL_PAY_DOMAIN'));
+        if ($domain !== '' && preg_match('/^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/', $domain)) {
+            return 'https://' . $domain;
+        }
+
+        return $this->host();
+    }
+
     public function create(WC_Order $order, int $amountToman, string $callbackUrl, int $timeout = 8): array
     {
         $payload = [
@@ -278,7 +293,7 @@ final class BTL_Zarinpal_Provider extends BTL_Payment_Provider_Base
             throw new BTL_Payment_Exception('zarinpal_create_provider_error_' . $errorCode);
         }
 
-        return ['trace' => $authority, 'url' => $this->host() . '/pg/StartPay/' . rawurlencode($authority)];
+        return ['trace' => $authority, 'url' => $this->startPayBase() . '/pg/StartPay/' . rawurlencode($authority)];
     }
 
     public function readCallback(WP_REST_Request $request): array
@@ -482,8 +497,15 @@ final class BTL_Payment_Gateway
 
     private static function callbackUrl(BTL_Payment_Provider $provider, WC_Order $order): string
     {
-        $base = rtrim(self::setting('BTL_PAYMENT_CALLBACK_BASE'), '/');
         $orderId = (int) $order->get_id();
+        $base = rtrim(self::setting('BTL_PAYMENT_CALLBACK_BASE'), '/');
+
+        if ($base === '') {
+            $site = rtrim(self::setting('BTL_PUBLIC_SITE_URL'), '/');
+            if ($site !== '') {
+                $base = $site . '/api/payment/callback';
+            }
+        }
 
         if ($base !== '') {
             return $base . '/' . $provider->id() . '/' . $orderId;
