@@ -796,8 +796,7 @@ final class BTL_Scheduler
         self::clear_watchdog($token);
 
         if ($changed > 0 && function_exists('btl_queue_revalidation')) {
-            // Listing queries carry the broad products tag alongside category tags.
-            btl_queue_revalidation(['products']);
+            btl_queue_revalidation(['products-pricing']);
         }
 
         $pending = self::take_pending_request();
