@@ -116,6 +116,19 @@ final class BTL_Invalidation
             $tags[] = 'seo-sitemap';
         }
 
+    if ($scope === self::SCOPE_PRICING) {
+        foreach (self::productCategorySlugs($productId) as $catSlug) {
+            $tags[] = BTL_Helpers::slugTag('category-pricing', $catSlug);
+        }
+
+        if (self::isFeatured($productId)) {
+            $tags[] = 'home-featured-pricing';
+        }
+
+        if (self::isInLatestWindow($post)) {
+            $tags[] = 'home-latest-pricing';
+        }
+    } else {
         foreach (self::productCategorySlugs($productId) as $catSlug) {
             $tags[] = BTL_Helpers::slugTag('category', $catSlug);
         }
@@ -127,7 +140,7 @@ final class BTL_Invalidation
         if (self::isInLatestWindow($post)) {
             $tags[] = 'home-latest';
         }
-
+    }
         return array_values(array_unique($tags));
     }
 

@@ -848,6 +848,15 @@ final class BTL_GraphQL
                 }, 'btl', DAY_IN_SECONDS);
             },
         ]);
+        register_graphql_field('Product', 'shortDescription2', [
+    'type' => 'String',
+    'resolve' => static function ($product) {
+        $id = (int) ($product->databaseId ?? 0);
+        if (!$id) return null;
+        $value = trim(wp_strip_all_tags((string) get_post_meta($id, 'short_description_2', true)));
+        return $value !== '' ? $value : null;
+    },
+]);
 
         register_graphql_field('VariableProduct', 'archivePricing', [
             'type' => 'ProductArchivePricing',
