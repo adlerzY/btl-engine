@@ -21,6 +21,7 @@ final class BTL_Pricing_Fields
     private const ACF_CONTENT_FIELDS = [
         'short-notify',
         'short_notify',
+        'short_description_2',
         'secondary_gallery',
         'content_matrix',
         'description',
