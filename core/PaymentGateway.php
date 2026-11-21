@@ -98,22 +98,26 @@ abstract class BTL_Payment_Provider_Base implements BTL_Payment_Provider
 
 final class BTL_Aqayepardakht_Provider extends BTL_Payment_Provider_Base
 {
-    private const API_BASE = 'https://api.aqayepardakht.ir/v3/';
-    private const START_BASE = 'https://api.aqayepardakht.ir/startpay/';
+    private const API_BASE = 'https://panel.aqayepardakht.ir/api/v2/';
+    private const START_BASE = 'https://panel.aqayepardakht.ir/startpay/';
+    private const START_SANDBOX_BASE = 'https://panel.aqayepardakht.ir/startpay/sandbox/';
 
     public function id(): string { return 'aqayepardakht'; }
     public function label(): string { return 'آقای پرداخت'; }
     public function isConfigured(): bool { return self::setting('BTL_AQAYEPARDAKHT_PIN') !== ''; }
-    public function minToman(): int { return 1001; }
-    public function maxToman(): int { return 99999999; }
+    public function minToman(): int { return 1000; }
+    public function maxToman(): int { return 400000000; }
     public function reuseSeconds(): int { return 1800; }
 
     public function create(WC_Order $order, int $amountToman, string $callbackUrl, int $timeout = 8): array
     {
+        $pin = self::setting('BTL_AQAYEPARDAKHT_PIN');
+
         $body = [
-            'pin' => self::setting('BTL_AQAYEPARDAKHT_PIN'),
+            'pin' => $pin,
             'amount' => $amountToman,
             'callback' => $callbackUrl,
+            'callback_method' => 'GET',
             'invoice_id' => (string) $order->get_id(),
             'description' => 'Arena2Battle - Order ' . $order->get_order_number(),
         ];
@@ -128,9 +132,12 @@ final class BTL_Aqayepardakht_Provider extends BTL_Payment_Provider_Base
             $body['email'] = $email;
         }
 
-        $result = self::post(self::API_BASE . 'pay', [
-            'headers' => ['Accept' => 'application/json'],
-            'body' => $body,
+        $result = self::post(self::API_BASE . 'create', [
+            'headers' => [
+                'Content-Type' => 'application/json',
+                'Accept' => 'application/json',
+            ],
+            'body' => wp_json_encode($body),
         ], $timeout);
 
         if (!$result['transport']) {
@@ -145,26 +152,25 @@ final class BTL_Aqayepardakht_Provider extends BTL_Payment_Provider_Base
         }
 
         $status = strtolower(trim((string) ($decoded['status'] ?? '')));
-        $trace = trim((string) ($decoded['tracking_code'] ?? ''));
+        $trace = trim((string) ($decoded['transid'] ?? ''));
 
-        if ($status === 'error' || $trace === '') {
-            $message = trim((string) ($decoded['message'] ?? $decoded['error'] ?? ''));
+        if ($result['code'] !== 200 || $status !== 'success' || $trace === '') {
+            $message = trim((string) ($decoded['message'] ?? $decoded['code'] ?? ''));
             self::log('Aqayepardakht create', 'provider_error_http_' . $result['code'] . ' ' . ($message !== '' ? substr($message, 0, 180) : self::snippet($result['raw'])) . ' order ' . $order->get_id());
             throw new BTL_Payment_Exception('aqayepardakht_create_provider_error');
         }
 
-        return ['trace' => $trace, 'url' => self::START_BASE . rawurlencode($trace)];
+        $startBase = strtolower($pin) === 'sandbox' ? self::START_SANDBOX_BASE : self::START_BASE;
+
+        return [
+            'trace' => $trace,
+            'url' => $startBase . rawurlencode($trace),
+        ];
     }
 
     public function readCallback(WP_REST_Request $request): array
     {
         $trace = self::param($request, 'transid');
-        if ($trace === '') {
-            $trace = self::param($request, 'tracking_number');
-        }
-        if ($trace === '') {
-            $trace = self::param($request, 'tracking_code');
-        }
 
         $order = self::param($request, 'oid');
         if ($order === '') {
@@ -174,39 +180,67 @@ final class BTL_Aqayepardakht_Provider extends BTL_Payment_Provider_Base
         return [
             'order_id' => ctype_digit($order) ? (int) $order : 0,
             'trace' => $trace,
-            'ok' => true,
+            'ok' => self::param($request, 'status') === '1',
         ];
     }
 
     public function verify(string $trace, int $amountToman): array
     {
         $result = self::post(self::API_BASE . 'verify', [
-            'headers' => ['Accept' => 'application/json'],
-            'body' => [
-                'pin' => self::setting('BTL_AQAYEPARDAKHT_PIN'),
-                'tracking_code' => $trace,
-                'amount' => $amountToman,
+            'headers' => [
+                'Content-Type' => 'application/json',
+                'Accept' => 'application/json',
             ],
+            'body' => wp_json_encode([
+                'pin' => self::setting('BTL_AQAYEPARDAKHT_PIN'),
+                'amount' => $amountToman,
+                'transid' => $trace,
+            ]),
         ], self::VERIFY_TIMEOUT, 2);
 
         if (!$result['transport']) {
-            return ['ok' => false, 'reference' => '', 'reason' => 'verify_transport_error ' . $result['error']];
+            return [
+                'ok' => false,
+                'reference' => '',
+                'reason' => 'verify_transport_error ' . $result['error'],
+            ];
         }
 
         $decoded = $result['json'];
         if (!is_array($decoded)) {
-            return ['ok' => false, 'reference' => '', 'reason' => 'verify_invalid_json_http_' . $result['code'] . ' ' . self::snippet($result['raw'])];
+            return [
+                'ok' => false,
+                'reference' => '',
+                'reason' => 'verify_invalid_json_http_' . $result['code'] . ' ' . self::snippet($result['raw']),
+            ];
         }
 
         $status = strtolower(trim((string) ($decoded['status'] ?? '')));
-        if ($status === 'error') {
-            $message = trim((string) ($decoded['message'] ?? $decoded['error'] ?? ''));
-            return ['ok' => false, 'reference' => '', 'reason' => $message !== '' ? substr($message, 0, 180) : 'verify_provider_error_' . $result['code']];
+        $code = trim((string) ($decoded['code'] ?? ''));
+
+        if ($result['code'] === 200 && $status === 'success' && $code === '1') {
+            return [
+                'ok' => true,
+                'reference' => '',
+                'reason' => '',
+            ];
         }
 
-        $reference = trim((string) ($decoded['tracking_number'] ?? $decoded['trackingNumber'] ?? $decoded['receipt'] ?? ''));
+        if ($status === 'error' && $code === '2') {
+            return [
+                'ok' => true,
+                'reference' => '',
+                'reason' => '',
+            ];
+        }
 
-        return ['ok' => true, 'reference' => $reference, 'reason' => ''];
+        $message = trim((string) ($decoded['message'] ?? ''));
+
+        return [
+            'ok' => false,
+            'reference' => '',
+            'reason' => $message !== '' ? substr($message, 0, 180) : 'verify_provider_error_http_' . $result['code'] . '_code_' . $code,
+        ];
     }
 }
 
