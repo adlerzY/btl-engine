@@ -4,7 +4,7 @@ defined('ABSPATH') || exit;
 final class BTL_Customer_Orders
 {
     private const MAX_CART_QUANTITY = 10;
-    private const UNPAID_ORDER_TTL = 2 * HOUR_IN_SECONDS;
+    public const UNPAID_ORDER_TTL = 2 * HOUR_IN_SECONDS;
 
     private const READY_OPTION = 'btl_checkout_requests_table_ready';
     public static function boot(): void
@@ -136,6 +136,7 @@ final class BTL_Customer_Orders
         $order = null;
         $orderId = 0;
         try {
+            self::assertCheckoutAllowed($userId);
             $order = wc_create_order(['customer_id'=>$userId, 'created_via'=>'btl_graphql']);
             if (is_wp_error($order) || !$order instanceof WC_Order) throw new RuntimeException('order_create_failed');
             $orderId = (int)$order->get_id();
@@ -187,7 +188,30 @@ final class BTL_Customer_Orders
             throw new GraphQL\Error\UserError('ثبت سفارش کامل نشد. لطفاً دوباره تلاش کنید.');
         }
     }
+    private static function assertCheckoutAllowed(int $userId): void
+    {
+        $open = wc_get_orders([
+            'customer_id' => $userId,
+            'status' => ['pending', 'checkout-draft'],
+            'created_via' => 'btl_graphql',
+            'limit' => 5,
+            'return' => 'ids',
+        ]);
+        if (count($open) >= 3) {
+            throw new GraphQL\Error\UserError('شما چند سفارش پرداخت‌نشده دارید. ابتدا آن‌ها را از بخش سفارش‌های من پرداخت یا لغو کنید.');
+        }
 
+        $recent = wc_get_orders([
+            'customer_id' => $userId,
+            'created_via' => 'btl_graphql',
+            'date_created' => '>' . (time() - HOUR_IN_SECONDS),
+            'limit' => 15,
+            'return' => 'ids',
+        ]);
+        if (count($recent) >= 10) {
+            throw new GraphQL\Error\UserError('تعداد سفارش‌های ثبت‌شده در یک ساعت گذشته بیش از حد مجاز است. کمی بعد دوباره تلاش کنید.');
+        }
+    }
     private static function validateLine(array $li): array
     {
         $productId = absint($li['productId'] ?? 0); $variationId = absint($li['variationId'] ?? 0); $quantity = (int)($li['quantity'] ?? 1);
@@ -501,6 +525,16 @@ final class BTL_Customer_Orders
             $order->update_meta_data('_btl_auto_cancelled_at', gmdate('c'));
             $order->save();
             $order->update_status('cancelled', 'لغو خودکار سفارش پرداخت‌نشده پس از دو ساعت.');
+                        $customerId = (int) $order->get_customer_id();
+            if ($customerId > 0) {
+                BTL_Notifications::push(
+                    $customerId,
+                    'سفارش پرداخت‌نشده لغو شد',
+                    'سفارش #' . $order->get_order_number() . ' به دلیل عدم پرداخت لغو شد. از بخش «سفارش‌های من» می‌توانید دوباره پرداخت یا ثبت کنید.',
+                    '/my-account/orders',
+                    'order'
+                );
+            }
         }
     }
     private static function attachOrder(int $id,int $orderId,string $token): void

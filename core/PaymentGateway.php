@@ -1116,6 +1116,19 @@ final class BTL_Payment_Gateway
                 $order->update_meta_data(self::META_COMPLETION_NOTE, 'yes');
                 $order->save();
             }
+            if ($order->get_meta('_btl_pay_notified') !== 'yes') {
+                $customerId = (int) $order->get_customer_id();
+                if ($customerId > 0) {
+                    BTL_Notifications::push(
+                        $customerId,
+                        'پرداخت شما تأیید شد ✅',
+                        'پرداخت سفارش #' . $order->get_order_number() . ' با موفقیت تأیید شد.',
+                        '/my-account/orders',
+                        'order'
+                    );
+                }
+                $order->update_meta_data('_btl_pay_notified', 'yes');
+            }
             self::setState($order, 'completed');
         } catch (Throwable $e) {
             BTL_Helpers::logger(sprintf('Payment completion failed for order %d: %s', $orderId, $e->getMessage()));

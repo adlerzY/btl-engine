@@ -86,6 +86,7 @@ function btl_autoload_core_class(string $class): void
             'BTL_Password_Reset' => 'PasswordReset.php',
             'BTL_Payment_Exception' => 'PaymentGateway.php',
             'BTL_Payment_Gateway' => 'PaymentGateway.php',
+            'BTL_Order_Retry' => 'OrderRetry.php',
         ];
     }
 
@@ -158,6 +159,7 @@ add_action('woocommerce_new_product_variation', ['BTL_GraphQL', 'invalidate_vari
 add_action('before_delete_post', ['BTL_GraphQL', 'invalidate_deleted_variation_region_cache'], 11, 1);
 add_action('transition_post_status', ['BTL_GraphQL', 'invalidate_region_status_cache'], 21, 3);
 add_action('graphql_register_types', ['BTL_GraphQL', 'register'], 10);
+add_action('graphql_register_types', ['BTL_Order_Retry', 'register'], 11);
 
 if (is_admin()) {
     BTL_Content_Matrix::boot();

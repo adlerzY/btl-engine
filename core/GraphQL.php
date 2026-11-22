@@ -1871,8 +1871,18 @@ final class BTL_GraphQL
             foreach ($children as $variation_id) {
                 $variation = $byId[(int) $variation_id] ?? null;
                 if (!$variation) continue;
-                if (get_post_status((int) $variation_id) !== 'publish' || !$variation->is_purchasable()) continue;
-                $cards[] = BTL_GraphQL::build_card($variation, $product);
+                if (get_post_status((int) $variation_id) !== 'publish') continue;
+                $card = BTL_GraphQL::build_card($variation, $product);
+                if (!$variation->is_purchasable()) {
+                    $card['price'] = '';
+                    $card['regularPrice'] = '';
+                    $card['salePrice'] = '';
+                    $card['giftPrice'] = 'disabled';
+                    $card['giftRegularPrice'] = 'disabled';
+                    $card['codePrice'] = 'disabled';
+                    $card['codeRegularPrice'] = 'disabled';
+                }
+                $cards[] = $card;
             }
 
             return $cards;
