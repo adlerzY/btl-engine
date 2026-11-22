@@ -203,6 +203,7 @@ final class BTL_Aqayepardakht_Provider extends BTL_Payment_Provider_Base
                 'ok' => false,
                 'reference' => '',
                 'reason' => 'verify_transport_error ' . $result['error'],
+                'transient' => true,
             ];
         }
 
@@ -212,6 +213,7 @@ final class BTL_Aqayepardakht_Provider extends BTL_Payment_Provider_Base
                 'ok' => false,
                 'reference' => '',
                 'reason' => 'verify_invalid_json_http_' . $result['code'] . ' ' . self::snippet($result['raw']),
+                'transient' => $result['code'] === 0 || $result['code'] === 429 || $result['code'] >= 500,
             ];
         }
 
@@ -223,6 +225,7 @@ final class BTL_Aqayepardakht_Provider extends BTL_Payment_Provider_Base
                 'ok' => true,
                 'reference' => '',
                 'reason' => '',
+                'transient' => false,
             ];
         }
 
@@ -231,6 +234,7 @@ final class BTL_Aqayepardakht_Provider extends BTL_Payment_Provider_Base
                 'ok' => true,
                 'reference' => '',
                 'reason' => '',
+                'transient' => false,
             ];
         }
 
@@ -240,6 +244,7 @@ final class BTL_Aqayepardakht_Provider extends BTL_Payment_Provider_Base
             'ok' => false,
             'reference' => '',
             'reason' => $message !== '' ? substr($message, 0, 180) : 'verify_provider_error_http_' . $result['code'] . '_code_' . $code,
+            'transient' => $result['code'] === 0 || $result['code'] === 429 || $result['code'] >= 500,
         ];
     }
 }
@@ -353,25 +358,45 @@ final class BTL_Zarinpal_Provider extends BTL_Payment_Provider_Base
         ], self::VERIFY_TIMEOUT, 2);
 
         if (!$result['transport']) {
-            return ['ok' => false, 'reference' => '', 'reason' => 'verify_transport_error ' . $result['error']];
+            return [
+                'ok' => false,
+                'reference' => '',
+                'reason' => 'verify_transport_error ' . $result['error'],
+                'transient' => true,
+            ];
         }
 
         $decoded = $result['json'];
         if (!is_array($decoded)) {
-            return ['ok' => false, 'reference' => '', 'reason' => 'verify_invalid_json_http_' . $result['code'] . ' ' . self::snippet($result['raw'])];
+            return [
+                'ok' => false,
+                'reference' => '',
+                'reason' => 'verify_invalid_json_http_' . $result['code'] . ' ' . self::snippet($result['raw']),
+                'transient' => $result['code'] === 0 || $result['code'] === 429 || $result['code'] >= 500,
+            ];
         }
 
         $data = is_array($decoded['data'] ?? null) ? $decoded['data'] : [];
         $code = (int) ($data['code'] ?? 0);
 
-        if ($code === 100 || $code === 101) {
-            return ['ok' => true, 'reference' => trim((string) ($data['ref_id'] ?? '')), 'reason' => ''];
+        if ($result['code'] === 200 && ($code === 100 || $code === 101)) {
+            return [
+                'ok' => true,
+                'reference' => trim((string) ($data['ref_id'] ?? '')),
+                'reason' => '',
+                'transient' => false,
+            ];
         }
 
         $errors = is_array($decoded['errors'] ?? null) ? $decoded['errors'] : [];
         $errorCode = (string) ($errors['code'] ?? $code);
 
-        return ['ok' => false, 'reference' => '', 'reason' => 'verify_code_' . $errorCode];
+        return [
+            'ok' => false,
+            'reference' => '',
+            'reason' => 'verify_code_' . $errorCode,
+            'transient' => $result['code'] === 0 || $result['code'] === 429 || $result['code'] >= 500,
+        ];
     }
 }
 
@@ -388,8 +413,21 @@ final class BTL_Payment_Gateway
     private const LEGACY_URL = '_btl_aqayepardakht_payment_url';
     private const LEGACY_AMOUNT = '_btl_aqayepardakht_amount_toman';
     private const VERIFY_LOCK_PREFIX = 'btl_pay_verify_';
-    private const VERIFY_LOCK_TTL = 60;
-    private const DEAD_STATUSES = ['cancelled', 'refunded', 'trash'];
+    private const VERIFY_LOCK_TTL = 90;
+    private const META_STATE = '_btl_pay_state';
+    private const META_VERIFIED_TRACE = '_btl_pay_verified_trace';
+    private const META_DUPLICATE_TRACES = '_btl_pay_duplicate_traces';
+    private const META_RECONCILE_ALERTED = '_btl_pay_reconcile_alerted';
+    private const META_COMPLETION_NOTE = '_btl_pay_completion_note';
+    private const HOOK_RECONCILE = 'btl_payment_reconcile';
+    private const HOOK_COMPLETE = 'btl_payment_complete';
+    private const AS_GROUP = 'btl';
+    private const RECONCILE_DELAYS = [90, 240, 600, 1200, 1800];
+    private const COMPLETE_DELAYS = [30, 120, 300, 900, 1800, 3600];
+    private const COMPLETE_LOCK_PREFIX = 'btl_pay_complete_';
+    private const COMPLETE_LOCK_TTL = 180;
+    private const NO_VERIFY_STATUSES = ['refunded', 'trash'];
+    private const COMPLETABLE_STATUSES = ['pending', 'on-hold', 'checkout-draft', 'processing', 'completed'];
     private const MAX_TRACES_PER_PROVIDER = 10;
     private const CREATE_BUDGET = 9;
 
@@ -551,6 +589,14 @@ final class BTL_Payment_Gateway
     public static function ensurePayment(WC_Order $order, ?string $requested = null): string
     {
         if ($order->is_paid()) {
+            if (self::verifiedTrace($order) !== '') {
+                self::queueCompletion((int) $order->get_id());
+            }
+            return '';
+        }
+
+        if (self::verifiedTrace($order) !== '') {
+            self::queueCompletion((int) $order->get_id());
             return '';
         }
 
@@ -565,6 +611,7 @@ final class BTL_Payment_Gateway
             && trim((string) $order->get_meta(self::LEGACY_TRACE)) !== ''
             && (int) $order->get_meta(self::LEGACY_AMOUNT) === (int) round((float) $order->get_total())
         ) {
+            self::scheduleReconcile((int) $order->get_id(), 'aqayepardakht', trim((string) $order->get_meta(self::LEGACY_TRACE)));
             return $legacyUrl;
         }
 
@@ -610,6 +657,12 @@ final class BTL_Payment_Gateway
                 && $createdAt > 0
                 && (time() - $createdAt) < $provider->reuseSeconds()
             ) {
+                $storedTrace = trim((string) $order->get_transaction_id());
+                if ($storedTrace === '') {
+                    $knownTraces = (array) (self::traces($order)[$provider->id()] ?? []);
+                    $storedTrace = $knownTraces ? (string) end($knownTraces) : '';
+                }
+                self::scheduleReconcile((int) $order->get_id(), $provider->id(), $storedTrace);
                 return $storedUrl;
             }
 
@@ -644,6 +697,7 @@ final class BTL_Payment_Gateway
             $order->update_meta_data(self::META_TRACES, $traces);
             $order->save();
 
+            self::scheduleReconcile((int) $order->get_id(), $provider->id(), (string) $payment['trace']);
             return $payment['url'];
         }
 
@@ -685,71 +739,403 @@ final class BTL_Payment_Gateway
         }
 
         if ($order->is_paid()) {
-            return self::redirectResult('success', $orderId);
+            $knownTrace = self::verifiedTrace($order);
+            if ($knownTrace !== '' && hash_equals($knownTrace, $trace)) {
+                self::queueCompletion($orderId);
+                return self::redirectResult('success', $orderId);
+            }
+            if ($knownTrace === '' && self::isLegacyPaidTrace($order, $provider, $trace)) {
+                self::markLegacyPaidTrace($order, $trace);
+                return self::redirectResult('success', $orderId);
+            }
         }
 
-        if (!$data['ok']) {
-            return self::redirectResult('cancelled', $orderId);
-        }
-
-        if (in_array($order->get_status(), self::DEAD_STATUSES, true)) {
-            self::logOrder($orderId, $provider, 'order_not_payable_' . $order->get_status());
-            return self::redirectResult('failed', $orderId);
-        }
-
-        if (!$provider->isConfigured()) {
-            self::logOrder($orderId, $provider, 'provider_not_configured');
-            return self::redirectResult('failed', $orderId);
-        }
-
-        if (!self::acquireVerifyLock($orderId)) {
+        $outcome = self::verifyAndRecord($order, $provider, $trace);
+        if ($outcome === 'verified') {
+            $fresh = wc_get_order($orderId);
+            if ($fresh instanceof WC_Order && $fresh->is_paid()) return self::redirectResult('success', $orderId);
             return self::redirectResult('processing', $orderId);
         }
+        if (in_array($outcome, ['busy', 'transient', 'duplicate'], true)) {
+            return self::redirectResult('processing', $orderId);
+        }
+        return self::redirectResult($outcome === 'rejected' ? 'cancelled' : 'failed', $orderId);
+    }
+
+    private static function state(WC_Order $order): string
+    {
+        return trim((string) $order->get_meta(self::META_STATE));
+    }
+
+    private static function verifiedTrace(WC_Order $order): string
+    {
+        return trim((string) $order->get_meta(self::META_VERIFIED_TRACE));
+    }
+
+    private static function isLegacyPaidTrace(WC_Order $order, BTL_Payment_Provider $provider, string $trace): bool
+    {
+        return $order->is_paid()
+            && $order->get_payment_method() === 'btl_' . $provider->id()
+            && hash_equals(trim((string) $order->get_transaction_id()), $trace);
+    }
+
+    private static function markLegacyPaidTrace(WC_Order $order, string $trace): void
+    {
+        $order->update_meta_data(self::META_VERIFIED_TRACE, $trace);
+        $order->update_meta_data(self::META_VERIFIED_AT, current_time('mysql', true));
+        $order->update_meta_data(self::META_STATE, 'verified');
+        $order->save();
+        self::queueCompletion((int) $order->get_id());
+    }
+
+    private static function setState(WC_Order $order, string $state): void
+    {
+        $order->update_meta_data(self::META_STATE, $state);
+        $order->save_meta_data();
+    }
+
+    private static function acquireLock(string $key, int $ttl): ?string
+    {
+        global $wpdb;
+        $value = wp_generate_uuid4() . ':' . (time() + max(1, $ttl));
+        if (add_option($key, $value, '', 'no')) return $value;
+
+        $existing = (string) $wpdb->get_var($wpdb->prepare(
+            "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1",
+            $key
+        ));
+        if ($existing === '') return null;
+
+        $parts = explode(':', $existing, 2);
+        $expires = isset($parts[1]) ? (int) $parts[1] : 0;
+        if ($expires > time()) return null;
+
+        $deleted = $wpdb->query($wpdb->prepare(
+            "DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
+            $key,
+            $existing
+        ));
+        if ((int) $deleted !== 1) return null;
+
+        wp_cache_delete($key, 'options');
+        wp_cache_delete('notoptions', 'options');
+
+        return add_option($key, $value, '', 'no') ? $value : null;
+    }
+
+    private static function releaseLock(string $key, string $value): void
+    {
+        global $wpdb;
+        $deleted = $wpdb->query($wpdb->prepare(
+            "DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
+            $key,
+            $value
+        ));
+        if ((int) $deleted === 1) {
+            wp_cache_delete($key, 'options');
+            wp_cache_delete('notoptions', 'options');
+        }
+    }
+
+    private static function scheduleSingle(string $hook, array $args, int $delay): void
+    {
+        $when = time() + max(1, $delay);
+        if (function_exists('as_schedule_single_action')) {
+            if (function_exists('as_has_scheduled_action') && as_has_scheduled_action($hook, $args, self::AS_GROUP)) return;
+            $actionId = as_schedule_single_action($when, $hook, $args, self::AS_GROUP);
+            if ($actionId) return;
+        }
+        if (!wp_next_scheduled($hook, $args)) wp_schedule_single_event($when, $hook, $args);
+    }
+
+    private static function scheduleReconcile(int $orderId, string $providerId, string $trace, int $attempt = 0): void
+    {
+        if ($orderId < 1 || $trace === '' || !isset(self::RECONCILE_DELAYS[$attempt])) return;
+        self::scheduleSingle(self::HOOK_RECONCILE, [$orderId, $providerId, $trace, $attempt], self::RECONCILE_DELAYS[$attempt]);
+    }
+
+    private static function queueCompletion(int $orderId): void
+    {
+        if ($orderId < 1) return;
+        $args = [$orderId, 0];
+        if (function_exists('as_enqueue_async_action')) {
+            $exists = function_exists('as_has_scheduled_action') && as_has_scheduled_action(self::HOOK_COMPLETE, $args, self::AS_GROUP);
+            if (!$exists) {
+                $actionId = as_enqueue_async_action(self::HOOK_COMPLETE, $args, self::AS_GROUP);
+                if (!$actionId) self::scheduleSingle(self::HOOK_COMPLETE, $args, 1);
+            }
+        } else {
+            self::scheduleSingle(self::HOOK_COMPLETE, $args, 1);
+        }
+        // Keep the backup retry aligned with the first retry delay. A later
+        // 120-second entry with identical arguments would block the 30-second retry.
+        self::scheduleSingle(self::HOOK_COMPLETE, [$orderId, 1], self::COMPLETE_DELAYS[0]);
+    }
+
+    private static function retryCompletion(WC_Order $order, int $attempt): void
+    {
+        $next = $attempt + 1;
+        if (!isset(self::COMPLETE_DELAYS[$next - 1])) {
+            self::flagForReview($order, 'تکمیل خودکار سفارش پس از چند تلاش ناموفق ماند.');
+            return;
+        }
+        self::scheduleSingle(self::HOOK_COMPLETE, [(int) $order->get_id(), $next], self::COMPLETE_DELAYS[$next - 1]);
+    }
+
+    private static function notifyStaff(WC_Order $order, string $title, string $body): void
+    {
+        if (class_exists('BTL_Admin_Notifications') && is_callable(['BTL_Admin_Notifications', 'pushToStaff'])) {
+            BTL_Admin_Notifications::pushToStaff('order', $title, $body, '/admin/orders/' . (int) $order->get_id());
+        }
+    }
+
+    private static function flagForReview(WC_Order $order, string $reason): void
+    {
+        if (self::state($order) === 'review') return;
+        self::setState($order, 'review');
+        $trace = self::verifiedTrace($order);
+        $order->add_order_note('⚠️ پرداخت تأیید شده اما سفارش خودکار تکمیل نشد: ' . $reason . ' — نیاز به بررسی دستی. کد تراکنش: ' . ($trace !== '' ? $trace : '—'));
+        BTL_Helpers::logger(sprintf('Payment review needed for order %d: %s', (int) $order->get_id(), $reason));
+        self::notifyStaff($order, 'پرداخت تأییدشده نیازمند بررسی', 'سفارش #' . $order->get_order_number() . ' پرداخت شده اما خودکار تکمیل نشد.');
+    }
+
+    private static function flagReconcileExhausted(WC_Order $order): void
+    {
+        if ($order->get_meta(self::META_RECONCILE_ALERTED) === 'yes') return;
+        $order->update_meta_data(self::META_RECONCILE_ALERTED, 'yes');
+        $order->add_order_note('⚠️ وضعیت پرداخت از درگاه به دلیل خطای ارتباطی قابل تعیین نشد. سفارش لغو یا تکمیل خودکار نمی‌شود و نیاز به بررسی دارد.');
+        $order->save();
+        self::notifyStaff($order, 'بررسی وضعیت پرداخت ناموفق بود', 'وضعیت پرداخت سفارش #' . $order->get_order_number() . ' پس از چند تلاش قابل تعیین نشد.');
+    }
+
+    private static function isTransientResult(array $result): bool
+    {
+        if (array_key_exists('transient', $result)) return (bool) $result['transient'];
+        $reason = (string) ($result['reason'] ?? '');
+        return str_starts_with($reason, 'verify_transport_error')
+            || str_starts_with($reason, 'verify_invalid_json_http_5')
+            || str_starts_with($reason, 'verify_provider_error_http_5');
+    }
+
+    private static function recordDuplicatePayment(WC_Order $order, BTL_Payment_Provider $provider, string $trace): void
+    {
+        $duplicates = $order->get_meta(self::META_DUPLICATE_TRACES);
+        $duplicates = is_array($duplicates) ? $duplicates : [];
+        if (!in_array($trace, $duplicates, true)) {
+            $duplicates[] = $trace;
+            $order->update_meta_data(self::META_DUPLICATE_TRACES, $duplicates);
+            $order->add_order_note('⚠️ پرداخت تکراری برای این سفارش تأیید شد. کد تراکنش اضافی: ' . $trace . ' — بررسی و در صورت لزوم استرداد دستی لازم است.');
+            $order->save();
+            self::notifyStaff($order, 'پرداخت تکراری تأیید شد', 'برای سفارش #' . $order->get_order_number() . ' بیش از یک تراکنش پرداخت تأیید شده است. بررسی استرداد لازم است.');
+        }
+    }
+
+    private static function verifyAndRecord(WC_Order $order, BTL_Payment_Provider $provider, string $trace): string
+    {
+        $orderId = (int) $order->get_id();
+        $knownTrace = self::verifiedTrace($order);
+        if ($knownTrace !== '' && hash_equals($knownTrace, $trace)) {
+            self::queueCompletion($orderId);
+            return 'verified';
+        }
+        if ($knownTrace === '' && self::isLegacyPaidTrace($order, $provider, $trace)) {
+            self::markLegacyPaidTrace($order, $trace);
+            return 'verified';
+        }
+        if (in_array($order->get_status(), self::NO_VERIFY_STATUSES, true)) return 'rejected';
+        if (!$provider->isConfigured()) return 'transient';
+
+        $lockKey = self::VERIFY_LOCK_PREFIX . $orderId;
+        $lockValue = self::acquireLock($lockKey, self::VERIFY_LOCK_TTL);
+        if ($lockValue === null) return 'busy';
 
         try {
-            $stored = (int) $order->get_meta(self::META_AMOUNT);
-            if ($stored < 1) {
-                $stored = (int) $order->get_meta(self::LEGACY_AMOUNT);
+            $order = wc_get_order($orderId);
+            if (!$order instanceof WC_Order) return 'rejected';
+            $knownTrace = self::verifiedTrace($order);
+            if ($knownTrace !== '' && hash_equals($knownTrace, $trace)) {
+                self::queueCompletion($orderId);
+                return 'verified';
             }
+            if ($knownTrace === '' && self::isLegacyPaidTrace($order, $provider, $trace)) {
+                self::markLegacyPaidTrace($order, $trace);
+                return 'verified';
+            }
+            if (in_array($order->get_status(), self::NO_VERIFY_STATUSES, true)) return 'rejected';
 
+            $stored = (int) $order->get_meta(self::META_AMOUNT);
+            if ($stored < 1) $stored = (int) $order->get_meta(self::LEGACY_AMOUNT);
             try {
                 $current = self::amountToman($order, $provider);
             } catch (BTL_Payment_Exception $e) {
                 self::logOrder($orderId, $provider, 'amount_out_of_range');
-                return self::redirectResult('failed', $orderId);
+                return 'rejected';
             }
-
             if ($stored < 1 || $stored !== $current) {
                 self::logOrder($orderId, $provider, 'amount_mismatch');
-                return self::redirectResult('failed', $orderId);
+                return 'rejected';
             }
 
             $result = $provider->verify($trace, $current);
-            if (!$result['ok']) {
-                self::logOrder($orderId, $provider, (string) $result['reason']);
-                return self::redirectResult('failed', $orderId);
+            if (empty($result['ok'])) {
+                self::logOrder($orderId, $provider, (string) ($result['reason'] ?? 'verify_failed'));
+                return self::isTransientResult($result) ? 'transient' : 'unpaid';
             }
 
-            $reference = (string) $result['reference'];
-            if ($reference !== '') {
-                $order->update_meta_data(self::META_REFERENCE, $reference);
+            if (($knownTrace !== '' && !hash_equals($knownTrace, $trace)) || $order->is_paid()) {
+                self::recordDuplicatePayment($order, $provider, $trace);
+                return 'duplicate';
             }
+
+            $reference = (string) ($result['reference'] ?? '');
+            if ($reference !== '') $order->update_meta_data(self::META_REFERENCE, $reference);
             $order->update_meta_data(self::META_VERIFIED_AT, current_time('mysql', true));
+            $order->update_meta_data(self::META_VERIFIED_TRACE, $trace);
+            $order->update_meta_data(self::META_STATE, 'verified');
+            $order->delete_meta_data(self::META_RECONCILE_ALERTED);
             $order->set_payment_method('btl_' . $provider->id());
             $order->set_payment_method_title($provider->label());
             $order->set_transaction_id($trace);
             $order->save();
-            $order->payment_complete($trace);
-            $order->add_order_note(sprintf(
-                'پرداخت %s با موفقیت تأیید شد. کد پیگیری: %s',
-                $provider->label(),
-                $reference !== '' ? $reference : '—'
-            ));
-            $order->save();
 
-            return self::redirectResult('success', $orderId);
+            self::queueCompletion($orderId);
+            return 'verified';
         } finally {
-            self::releaseVerifyLock($orderId);
+            self::releaseLock($lockKey, $lockValue);
+        }
+    }
+
+    private static function ensureCodeKeysAssigned(WC_Order $order): bool
+    {
+        foreach ($order->get_items('line_item') as $itemId => $item) {
+            if ($item->get_meta('روش تحویل') !== 'code') continue;
+            if (!class_exists('BTL_Secure_Fields') || !class_exists('BTL_CdKey_Stock')) return false;
+            $needed = max(1, (int) $item->get_quantity());
+            if (BTL_Secure_Fields::countByOrderItem((int) $order->get_id(), (int) $itemId, 'cdkey') >= $needed) continue;
+            $status = $order->get_status();
+            BTL_CdKey_Stock::maybe_assign_on_status_change((int) $order->get_id(), $status, $status, $order);
+            if (BTL_Secure_Fields::countByOrderItem((int) $order->get_id(), (int) $itemId, 'cdkey') < $needed) return false;
+        }
+        return true;
+    }
+
+    public static function run_reconcile($orderId = 0, $providerId = '', $trace = '', $attempt = 0): void
+    {
+        $orderId = (int) $orderId;
+        $attempt = max(0, (int) $attempt);
+        $trace = (string) $trace;
+        $order = $orderId > 0 ? wc_get_order($orderId) : false;
+        $provider = self::providers()[(string) $providerId] ?? null;
+        if (!$order instanceof WC_Order || !$provider instanceof BTL_Payment_Provider || $trace === '') return;
+        if (!self::traceBelongs($order, $provider->id(), $trace)) return;
+
+        $knownTrace = self::verifiedTrace($order);
+        if ($order->is_paid()) {
+            if ($knownTrace !== '' && hash_equals($knownTrace, $trace)) return;
+            if ($knownTrace === '' && self::isLegacyPaidTrace($order, $provider, $trace)) {
+                self::markLegacyPaidTrace($order, $trace);
+                return;
+            }
+        }
+        if (self::state($order) === 'review' && $knownTrace !== '' && hash_equals($knownTrace, $trace)) return;
+
+        $outcome = self::verifyAndRecord($order, $provider, $trace);
+        if (in_array($outcome, ['verified', 'duplicate', 'rejected'], true)) return;
+
+        if (isset(self::RECONCILE_DELAYS[$attempt + 1])) {
+            self::scheduleReconcile($orderId, $provider->id(), $trace, $attempt + 1);
+            return;
+        }
+        if (in_array($outcome, ['busy', 'transient'], true)) {
+            $fresh = wc_get_order($orderId);
+            if ($fresh instanceof WC_Order) self::flagReconcileExhausted($fresh);
+        }
+    }
+
+    public static function run_complete($orderId = 0, $attempt = 0): void
+    {
+        $orderId = (int) $orderId;
+        $attempt = max(0, (int) $attempt);
+        $order = $orderId > 0 ? wc_get_order($orderId) : false;
+        if (!$order instanceof WC_Order) return;
+
+        $trace = self::verifiedTrace($order);
+        if ($trace === '' || in_array(self::state($order), ['review', 'completed'], true)) return;
+
+        $status = $order->get_status();
+        if (!in_array($status, self::COMPLETABLE_STATUSES, true)) {
+            self::flagForReview($order, 'وضعیت سفارش (' . $status . ') اجازه تکمیل خودکار نمی‌دهد.');
+            return;
+        }
+
+        $lockKey = self::COMPLETE_LOCK_PREFIX . $orderId;
+        $lockValue = self::acquireLock($lockKey, self::COMPLETE_LOCK_TTL);
+        if ($lockValue === null) {
+            self::retryCompletion($order, $attempt);
+            return;
+        }
+
+        try {
+            $order = wc_get_order($orderId);
+            if (!$order instanceof WC_Order || self::state($order) === 'review') return;
+            $status = $order->get_status();
+            if (!in_array($status, self::COMPLETABLE_STATUSES, true)) {
+                self::flagForReview($order, 'وضعیت سفارش (' . $status . ') اجازه تکمیل خودکار نمی‌دهد.');
+                return;
+            }
+
+            if (!$order->is_paid()) {
+                self::setState($order, 'completing');
+                $order->payment_complete($trace);
+                $order = wc_get_order($orderId);
+                if (!$order instanceof WC_Order) return;
+            }
+
+            if (!$order->is_paid()) {
+                self::retryCompletion($order, $attempt);
+                return;
+            }
+
+            if (!in_array($order->get_status(), ['processing', 'completed'], true)) {
+                self::flagForReview($order, 'پرداخت ثبت شده اما وضعیت سفارش ' . $order->get_status() . ' است.');
+                return;
+            }
+
+            if (!self::ensureCodeKeysAssigned($order)) {
+                self::flagForReview($order, 'اختصاص کامل CD Keyهای سفارش پس از پرداخت انجام نشد.');
+                return;
+            }
+
+            if ($order->get_meta(self::META_COMPLETION_NOTE) !== 'yes') {
+                $reference = trim((string) $order->get_meta(self::META_REFERENCE));
+                $order->add_order_note(sprintf(
+                    'پرداخت %s با موفقیت تأیید شد. کد پیگیری: %s',
+                    $order->get_payment_method_title() ?: 'درگاه',
+                    $reference !== '' ? $reference : '—'
+                ));
+                $order->update_meta_data(self::META_COMPLETION_NOTE, 'yes');
+                $order->save();
+            }
+            self::setState($order, 'completed');
+        } catch (Throwable $e) {
+            BTL_Helpers::logger(sprintf('Payment completion failed for order %d: %s', $orderId, $e->getMessage()));
+            $fresh = wc_get_order($orderId);
+            if ($fresh instanceof WC_Order && $fresh->is_paid() && in_array($fresh->get_status(), ['processing', 'completed'], true)) {
+                try {
+                    if (self::ensureCodeKeysAssigned($fresh)) {
+                        self::setState($fresh, 'completed');
+                    } else {
+                        self::flagForReview($fresh, 'اختصاص CD Key پس از ثبت پرداخت کامل نشد.');
+                    }
+                } catch (Throwable $recoveryError) {
+                    BTL_Helpers::logger(sprintf('Payment delivery recovery failed for order %d: %s', $orderId, $recoveryError->getMessage()));
+                    self::retryCompletion($fresh, $attempt);
+                }
+            } elseif ($fresh instanceof WC_Order) {
+                self::retryCompletion($fresh, $attempt);
+            }
+        } finally {
+            self::releaseLock($lockKey, $lockValue);
         }
     }
 
@@ -790,28 +1176,6 @@ final class BTL_Payment_Gateway
         }
 
         return $amount;
-    }
-
-    private static function acquireVerifyLock(int $orderId): bool
-    {
-        $key = self::VERIFY_LOCK_PREFIX . $orderId;
-        $now = time();
-        $existing = get_option($key, null);
-
-        if ($existing !== null && (int) $existing > 0 && ($now - (int) $existing) < self::VERIFY_LOCK_TTL) {
-            return false;
-        }
-
-        if ($existing !== null) {
-            delete_option($key);
-        }
-
-        return add_option($key, (string) $now, '', 'no');
-    }
-
-    private static function releaseVerifyLock(int $orderId): void
-    {
-        delete_option(self::VERIFY_LOCK_PREFIX . $orderId);
     }
 
     private static function publicSiteUrl(): string

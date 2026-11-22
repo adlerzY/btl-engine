@@ -221,6 +221,9 @@ add_action('graphql_register_types', ['BTL_Credentials_Auth', 'register'], 10);
 add_action('graphql_register_types', ['BTL_Password_Reset', 'register'], 10);
 
 // Admin GraphQL schema is exposed only to the Next Admin BFF. WP admin UI remains separate.
+add_action('btl_payment_reconcile', ['BTL_Payment_Gateway', 'run_reconcile'], 10, 4);
+add_action('btl_payment_complete', ['BTL_Payment_Gateway', 'run_complete'], 10, 2);
+
 if (btl_is_admin_graphql_request()) {
     add_action('graphql_register_types', ['BTL_Admin_Permissions', 'register_graphql'], 11);
     add_action('graphql_register_types', ['BTL_Admin_Orders', 'register'], 12);

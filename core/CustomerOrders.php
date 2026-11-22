@@ -494,6 +494,7 @@ final class BTL_Customer_Orders
         ]);
         foreach ($unpaid as $order) {
             if (!$order instanceof WC_Order || $order->is_paid()) continue;
+            if (trim((string) $order->get_meta('_btl_pay_verified_trace')) !== '') continue;
             if ($order->get_created_via() !== 'btl_graphql') continue;
             $orderId = (int)$order->get_id();
             BTL_CdKey_Stock::releaseReservedForOrder($orderId);

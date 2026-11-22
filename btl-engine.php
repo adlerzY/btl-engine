@@ -38,6 +38,8 @@ register_deactivation_hook(__FILE__, function () {
         'btl_cleanup_job',
         'btl_checkout_recovery',
         'btl_cdkey_cleanup_orphans',
+        'btl_payment_reconcile',
+        'btl_payment_complete',
         'btl_otp_cleanup',
         'btl_login_attempts_cleanup',
         'btl_pricing_discount_boundary',

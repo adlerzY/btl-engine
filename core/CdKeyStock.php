@@ -348,7 +348,19 @@ final class BTL_CdKey_Stock
     public static function maybe_assign_on_status_change($orderId, $oldStatus, $newStatus, $order): void
     {
         $orderId = (int) $orderId;
-        if (in_array($newStatus, ['cancelled','failed','refunded','expired'], true)) { self::releaseReservedForOrder($orderId); return; }
+        if (in_array($newStatus, ['cancelled', 'failed', 'refunded', 'expired'], true)) {
+            $order = wc_get_order($orderId);
+            $verified = $order instanceof WC_Order
+                ? trim((string) $order->get_meta('_btl_pay_verified_trace'))
+                : '';
+
+            // Do not release reserved stock for a payment already verified by the gateway.
+            // Refunded and expired orders remain terminal and release their reservations.
+            if ($verified === '' || in_array($newStatus, ['refunded', 'expired'], true)) {
+                self::releaseReservedForOrder($orderId);
+            }
+            return;
+        }
         if (!in_array($newStatus, ['processing','completed'], true)) return;
         $order = $order instanceof WC_Order ? $order : wc_get_order($orderId);
         if (!$order) return;
@@ -378,6 +390,13 @@ final class BTL_CdKey_Stock
         $released = 0;
         foreach ($rows ?: [] as $row) {
             $orderId = (int) $row->order_id; $order = $orderId ? wc_get_order($orderId) : false;
+            if ($order instanceof WC_Order && trim((string) $order->get_meta('_btl_pay_verified_trace')) !== ''
+                && !in_array($order->get_status(), ['refunded', 'expired', 'trash'], true)) {
+                if (in_array($order->get_status(), ['processing', 'completed'], true)) {
+                    self::maybe_assign_on_status_change($orderId, $order->get_status(), $order->get_status(), $order);
+                }
+                continue;
+            }
             if (!$order || in_array($order->get_status(), ['cancelled','failed','refunded','expired','trash'], true)) $released += self::releaseReservedForOrder($orderId);
             elseif (in_array($order->get_status(), ['pending', 'on-hold', 'checkout-draft'], true) && strtotime((string)$order->get_date_created()) < time() - self::RESERVATION_TTL) $released += self::releaseReservedForOrder($orderId);
             elseif (in_array($order->get_status(), ['processing','completed'], true)) self::maybe_assign_on_status_change($orderId, $order->get_status(), $order->get_status(), $order);
