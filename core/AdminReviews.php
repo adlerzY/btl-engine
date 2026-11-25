@@ -40,12 +40,14 @@ final class BTL_Admin_Reviews
                 'first' => ['type' => 'Int'],
                 'after' => ['type' => 'String'],
                 'state' => ['type' => 'String'],
+                'order' => ['type' => 'String'],
             ],
             'resolve' => static function ($root, array $args): array {
                 self::assertPermission();
                 $first = min(max((int)($args['first'] ?? 20), 1), 50);
                 $offset = BTL_Customer_Tickets::decodeCursor($args['after'] ?? null);
                 $state = sanitize_key((string)($args['state'] ?? 'pending'));
+                $direction = strtolower((string)($args['order'] ?? 'desc')) === 'asc' ? 'ASC' : 'DESC';
 
                 $metaQuery = [];
                 if ($state === 'flagged') $metaQuery[] = ['key' => '_btl_admin_review_state', 'value' => 'flagged', 'compare' => '='];
@@ -59,17 +61,25 @@ final class BTL_Admin_Reviews
 
                 $queryArgs = [
                     'type' => 'review',
+                    'parent' => 0,
                     'status' => $state === 'published' ? 'approve' : ($state === 'flagged' || $state === 'hidden' || $state === 'pending' ? 'hold' : 'all'),
                     'number' => $first + 1,
                     'offset' => $offset,
                     'orderby' => 'comment_date_gmt',
-                    'order' => 'DESC',
+                    'order' => $direction,
                     'meta_query' => $metaQuery,
                 ];
                 if ($state === 'published') $queryArgs['meta_query'] = [['key' => '_btl_admin_review_state', 'compare' => 'NOT EXISTS']];
+
                 $comments = get_comments($queryArgs);
                 $hasNext = count($comments) > $first;
                 if ($hasNext) $comments = array_slice($comments, 0, $first);
+
+                $productIds = array_values(array_unique(array_map(static fn($comment): int => (int)$comment->comment_post_ID, $comments)));
+                if ($productIds) {
+                    _prime_post_caches($productIds, false, true);
+                }
+
                 return [
                     'nodes' => array_map([self::class, 'payloadForExternal'], $comments ?: []),
                     'pageInfo' => [
@@ -120,6 +130,7 @@ final class BTL_Admin_Reviews
                 $review = get_comment((int)$input['reviewId']);
                 $content = wp_kses_post(trim((string)$input['content']));
                 if (!$review || $review->comment_type !== 'review') throw new GraphQL\Error\UserError('نظر یافت نشد.');
+                if ((int)$review->comment_parent !== 0) throw new GraphQL\Error\UserError('فقط می‌توان به نظر اصلی پاسخ داد.');
                 if ($content === '') throw new GraphQL\Error\UserError('متن پاسخ خالی است.');
                 $commentId = wp_insert_comment([
                     'comment_post_ID' => $review->comment_post_ID,
@@ -132,6 +143,12 @@ final class BTL_Admin_Reviews
                 if (!$commentId) throw new GraphQL\Error\UserError('ثبت پاسخ با خطا مواجه شد.');
                 update_comment_meta($commentId, 'btl_is_staff_reply', 1);
                 BTL_Admin_Audit::record(get_current_user_id(), 'REVIEW_REPLY', 'review', $review->comment_ID);
+
+                $product = wc_get_product((int)$review->comment_post_ID);
+                if ($product && function_exists('btl_queue_revalidation')) {
+                    btl_queue_revalidation(["product-{$product->get_slug()}"]);
+                }
+
                 return ['success' => true];
             },
         ]);

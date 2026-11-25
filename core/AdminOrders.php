@@ -73,6 +73,7 @@ final class BTL_Admin_Orders
                 'after' => ['type' => 'String'],
                 'status' => ['type' => 'String'],
                 'search' => ['type' => 'String'],
+                'order' => ['type' => 'String'],
             ],
             'resolve' => static function ($root, array $args): array {
                 self::assertPermission('orders.read');
@@ -80,22 +81,40 @@ final class BTL_Admin_Orders
                 $first = min(max((int)($args['first'] ?? 20), 1), 50);
                 $offset = BTL_Customer_Tickets::decodeCursor($args['after'] ?? null);
                 $status = sanitize_key((string)($args['status'] ?? ''));
-                $search = sanitize_text_field((string)($args['search'] ?? ''));
+                $search = trim(sanitize_text_field((string)($args['search'] ?? '')));
+                $direction = strtolower((string)($args['order'] ?? 'desc')) === 'asc' ? 'ASC' : 'DESC';
+                $statuses = in_array($status, ['processing', 'completed'], true) ? [$status] : ['processing', 'completed'];
 
                 $queryArgs = [
                     'limit' => $first + 1,
                     'offset' => $offset,
                     'orderby' => 'date',
-                    'order' => 'DESC',
+                    'order' => $direction,
                     'return' => 'objects',
-                    'status' => ['processing', 'completed'],
+                    'status' => $statuses,
                 ];
 
-                if (in_array($status, ['processing', 'completed'], true)) {
-                    $queryArgs['status'] = [$status];
-                }
                 if ($search !== '') {
-                    $queryArgs['search'] = $search;
+                    if (ctype_digit($search)) {
+                        $found = wc_get_order((int)$search);
+                        $orders = $found instanceof WC_Order && in_array($found->get_status(), $statuses, true) ? [$found] : [];
+                        return self::connection($orders, false, 0);
+                    }
+
+                    if (is_email($search)) {
+                        $queryArgs['billing_email'] = $search;
+                    } else {
+                        $customerIds = get_users([
+                            'search' => '*' . $search . '*',
+                            'search_columns' => ['user_login', 'user_email', 'user_nicename', 'display_name'],
+                            'fields' => 'ID',
+                            'number' => 25,
+                        ]);
+                        if (!$customerIds) {
+                            return self::connection([], false, 0);
+                        }
+                        $queryArgs['customer_id'] = array_map('intval', $customerIds);
+                    }
                 }
 
                 $orders = wc_get_orders($queryArgs);
@@ -104,19 +123,7 @@ final class BTL_Admin_Orders
                     $orders = array_slice($orders, 0, $first);
                 }
 
-                $orderIds = array_map(static fn(WC_Order $order): int => (int)$order->get_id(), $orders);
-                $cdkeyCountsByOrder = BTL_Secure_Fields::countsByOrders($orderIds, 'cdkey');
-
-                return [
-                    'nodes' => array_map(static function (WC_Order $order) use ($cdkeyCountsByOrder): array {
-                        $counts = $cdkeyCountsByOrder[(int)$order->get_id()] ?? [];
-                        return self::orderPayload($order, false, $counts);
-                    }, $orders),
-                    'pageInfo' => [
-                        'hasNextPage' => $hasNext,
-                        'endCursor' => BTL_Customer_Tickets::encodeCursor($offset + count($orders)),
-                    ],
-                ];
+                return self::connection($orders, $hasNext, $offset);
             },
         ]);
 
@@ -126,7 +133,7 @@ final class BTL_Admin_Orders
             'resolve' => static function ($root, array $args): ?array {
                 self::assertPermission('orders.read');
                 $order = wc_get_order((int)$args['id']);
-                return $order ? self::orderPayload($order, true) : null;
+                return $order instanceof WC_Order ? self::orderPayload($order, true) : null;
             },
         ]);
 
@@ -196,8 +203,8 @@ final class BTL_Admin_Orders
                     }
                 }
                 if ($old !== $status) {
-                    BTL_Cache::delete('admin_processing_orders_count');
                     $order->update_status($status, 'Admin Operations Center');
+                    BTL_Cache::delete('admin_processing_orders_count');
                     BTL_Admin_Audit::record(get_current_user_id(), 'ORDER_STATUS_CHANGE', 'order', (int)$order->get_id(), 'success', ['from' => $old, 'to' => $status]);
                 }
 
@@ -256,6 +263,23 @@ final class BTL_Admin_Orders
                 return ['success' => true, 'status' => $status];
             },
         ]);
+    }
+
+    private static function connection(array $orders, bool $hasNext, int $offset): array
+    {
+        $orderIds = array_map(static fn(WC_Order $order): int => (int)$order->get_id(), $orders);
+        $cdkeyCountsByOrder = $orderIds ? BTL_Secure_Fields::countsByOrders($orderIds, 'cdkey') : [];
+
+        return [
+            'nodes' => array_map(static function (WC_Order $order) use ($cdkeyCountsByOrder): array {
+                $counts = $cdkeyCountsByOrder[(int)$order->get_id()] ?? [];
+                return self::orderPayload($order, false, $counts);
+            }, $orders),
+            'pageInfo' => [
+                'hasNextPage' => $hasNext,
+                'endCursor' => BTL_Customer_Tickets::encodeCursor($offset + count($orders)),
+            ],
+        ];
     }
 
     private static function assertPermission(string $permission): void

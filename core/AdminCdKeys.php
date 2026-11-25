@@ -92,7 +92,8 @@ final class BTL_Admin_CdKeys
                 $hasNext = count($rows) > $first;
                 if ($hasNext) $rows = array_slice($rows, 0, $first);
 
-                $summary = self::summary($where, $params);
+                self::primeProducts($rows ?: []);
+$summary = self::summary($productId, $variationId);
                 return [
                     'nodes' => array_map([self::class, 'stockPayload'], $rows ?: []),
                     'pageInfo' => [
@@ -311,15 +312,58 @@ final class BTL_Admin_CdKeys
         return $item;
     }
 
-    private static function summary(string $where, array $params): array
+    private static function summary(int $productId, int $variationId): array
     {
         global $wpdb;
-        $table = BTL_CdKey_Stock::table();
-        $available = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table} WHERE {$where} AND status='available'", $params));
-        $reserved = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table} WHERE {$where} AND status='reserved'", $params));
-        $used = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table} WHERE {$where} AND status='used'", $params));
-        $failed = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table} WHERE {$where} AND status NOT IN ('available','reserved','used')", $params));
+        $conditions = ['1=1'];
+        $params = [];
+        if ($productId > 0) {
+            $conditions[] = 'product_id=%d';
+            $params[] = $productId;
+        }
+        if ($variationId > 0) {
+            $conditions[] = 'variation_id=%d';
+            $params[] = $variationId;
+        }
+
+        $sql = "SELECT status, COUNT(*) AS row_count FROM " . BTL_CdKey_Stock::table() . " WHERE " . implode(' AND ', $conditions) . " GROUP BY status";
+        $rows = $params ? $wpdb->get_results($wpdb->prepare($sql, $params)) : $wpdb->get_results($sql);
+
+        $available = 0;
+        $reserved = 0;
+        $used = 0;
+        $failed = 0;
+        foreach ($rows ?: [] as $row) {
+            $count = (int)$row->row_count;
+            switch ((string)$row->status) {
+                case 'available':
+                    $available += $count;
+                    break;
+                case 'reserved':
+                    $reserved += $count;
+                    break;
+                case 'used':
+                    $used += $count;
+                    break;
+                default:
+                    $failed += $count;
+            }
+        }
+
         return ['available' => $available, 'reserved' => $reserved, 'used' => $used, 'failed' => $failed, 'total' => $available + $reserved + $used + $failed];
+    }
+
+    private static function primeProducts(array $rows): void
+    {
+        $ids = [];
+        foreach ($rows as $row) {
+            $ids[(int)$row->variation_id] = true;
+            $ids[(int)$row->product_id] = true;
+        }
+        unset($ids[0]);
+        if ($ids) {
+            _prime_post_caches(array_keys($ids), false, true);
+        }
     }
 
     private static function stockPayload(object $row): array

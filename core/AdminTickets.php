@@ -114,6 +114,7 @@ final class BTL_Admin_Tickets
                 'status' => ['type' => 'String'],
                 'search' => ['type' => 'String'],
                 'mineOnly' => ['type' => 'Boolean'],
+                'order' => ['type' => 'String'],
             ],
             'resolve' => static function ($root, array $args): array {
                 self::assertPermission('tickets.read');
@@ -122,6 +123,7 @@ final class BTL_Admin_Tickets
                 $status = sanitize_key((string)($args['status'] ?? ''));
                 $search = sanitize_text_field((string)($args['search'] ?? ''));
                 $mineOnly = !empty($args['mineOnly']);
+                $direction = strtolower((string)($args['order'] ?? 'desc')) === 'asc' ? 'ASC' : 'DESC';
 
                 $metaQuery = [];
                 if ($status !== '' && $status !== 'all') {
@@ -137,8 +139,10 @@ final class BTL_Admin_Tickets
                     'post_status' => 'publish',
                     'posts_per_page' => $first + 1,
                     'offset' => $offset,
-                    'orderby' => 'date',
-                    'order' => 'DESC',
+                    'orderby' => ['date' => $direction, 'ID' => $direction],
+                    'no_found_rows' => true,
+                    'ignore_sticky_posts' => true,
+                    'update_post_term_cache' => false,
                 ];
                 if ($metaQuery) $queryArgs['meta_query'] = $metaQuery;
                 if ($search !== '') $queryArgs['s'] = $search;
@@ -146,6 +150,14 @@ final class BTL_Admin_Tickets
                 $posts = (new WP_Query($queryArgs))->posts;
                 $hasNext = count($posts) > $first;
                 if ($hasNext) $posts = array_slice($posts, 0, $first);
+
+                $userIds = [];
+                foreach ($posts as $post) {
+                    $userIds[] = (int)get_post_meta($post->ID, 'customer_id', true);
+                    $userIds[] = (int)get_post_meta($post->ID, 'assigned_admin_id', true);
+                }
+                $userIds = array_values(array_unique(array_filter($userIds)));
+                if ($userIds) cache_users($userIds);
 
                 $claims = self::claimsForTickets(array_map(static fn(WP_Post $post): int => (int)$post->ID, $posts));
                 return [
@@ -170,17 +182,21 @@ final class BTL_Admin_Tickets
             'type' => ['list_of' => 'BtlAdminStaffUser'],
             'resolve' => static function (): array {
                 self::assertPermission('tickets.write');
-                $users = get_users(['fields' => 'all']);
-                $mapped = array_map(static function (WP_User $user): ?array {
-                    $id = (int)$user->ID;
-                    if (!user_can($id, 'manage_woocommerce')) return null;
-                    return [
-                        'databaseId' => $id,
-                        'name' => (string)$user->display_name,
-                        'email' => (string)$user->user_email,
-                    ];
-                }, $users ?: []);
-                return array_values(array_filter($mapped));
+                $ids = BTL_Admin_Permissions::staffUserIds();
+                if (!$ids) return [];
+
+                $users = get_users([
+                    'include' => $ids,
+                    'orderby' => 'display_name',
+                    'order' => 'ASC',
+                    'fields' => ['ID', 'display_name', 'user_email'],
+                ]);
+
+                return array_map(static fn($user): array => [
+                    'databaseId' => (int)$user->ID,
+                    'name' => (string)$user->display_name,
+                    'email' => (string)$user->user_email,
+                ], $users ?: []);
             },
         ]);
 
@@ -192,6 +208,7 @@ final class BTL_Admin_Tickets
                 $post = get_post((int)$args['id']);
                 if (!$post || $post->post_type !== 'support_ticket') return null;
                 $replies = BTL_Ticket_Replies::forTicket((int)$post->ID);
+                cache_users(array_values(array_unique(array_map('intval', array_column($replies, 'author_id')))));
                 $events = self::events((int)$post->ID, false);
                 $notes = self::events((int)$post->ID, true);
                 return [
@@ -209,7 +226,10 @@ final class BTL_Admin_Tickets
             'mutateAndGetPayload' => static function (array $input): array {
                 self::assertPermission('tickets.claim');
                 $ticketId = (int)$input['ticketId'];
-                $post = self::assertTicket($ticketId);
+                self::assertTicket($ticketId);
+                if (in_array(self::normalizedStatus($ticketId), ['resolved', 'closed'], true)) {
+                    throw new GraphQL\Error\UserError('این تیکت بسته شده و قابل دریافت مسئولیت نیست.');
+                }
                 $now = gmdate('Y-m-d H:i:s');
                 global $wpdb;
                 $wpdb->query($wpdb->prepare("DELETE FROM " . self::claimsTable() . " WHERE expires_at <= %s", $now));
@@ -242,7 +262,7 @@ final class BTL_Admin_Tickets
             'mutateAndGetPayload' => static function (array $input): array {
                 self::assertPermission('tickets.write');
                 $ticketId = (int)$input['ticketId'];
-                $post = self::assertTicket($ticketId);
+                self::assertTicket($ticketId);
                 $content = wp_kses_post(trim((string)$input['content']));
                 if ($content === '') throw new GraphQL\Error\UserError('متن پاسخ خالی است.');
                 BTL_Ticket_Replies::add($ticketId, get_current_user_id(), 'staff', $content);
@@ -374,7 +394,6 @@ final class BTL_Admin_Tickets
         ];
     }
 
-
     private static function normalizedStatus(int $ticketId): string
     {
         $status = sanitize_key((string)get_post_meta($ticketId, 'ticket_status', true)) ?: 'open';
@@ -398,6 +417,7 @@ final class BTL_Admin_Tickets
         global $wpdb;
         $where = $notesOnly ? "event_type='note'" : "event_type<>'note'";
         $rows = $wpdb->get_results($wpdb->prepare("SELECT * FROM " . self::eventsTable() . " WHERE ticket_id=%d AND {$where} ORDER BY id DESC LIMIT 100", $ticketId), ARRAY_A) ?: [];
+        cache_users(array_values(array_unique(array_map('intval', array_column($rows, 'admin_user_id')))));
         return array_map(static function (array $row): array {
             $user = get_userdata((int)$row['admin_user_id']);
             return [

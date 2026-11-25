@@ -4,17 +4,16 @@ defined('ABSPATH') || exit;
 final class BTL_Admin_Notifications
 {
     private const READY_OPTION = 'btl_admin_notifications_table_ready_v1';
+    private const KEEP_PER_ADMIN = 200;
 
     public static function table(): string { global $wpdb; return $wpdb->prefix . 'btl_admin_notifications'; }
 
     public static function boot(): void
     {
-        // Operational notification hooks must stay active on storefront requests.
         add_action('woocommerce_new_order', [self::class, 'notify_new_order'], 20, 1);
         add_action('save_post_support_ticket', [self::class, 'notify_new_ticket'], 20, 3);
         add_action('wp_insert_comment', [self::class, 'notify_new_review'], 20, 2);
 
-        // The GraphQL schema itself is Admin-only; the event hooks above are not.
         if (btl_is_admin_graphql_request()) {
             add_action('graphql_register_types', [self::class, 'register'], 12);
         }
@@ -45,9 +44,7 @@ final class BTL_Admin_Notifications
 
     public static function pushToStaff(string $type, string $title, string $body, ?string $link = null): void
     {
-        $staffUsers = get_users(['fields' => 'ID']);
-        $staffIds = array_values(array_filter(array_map('intval', $staffUsers), static fn(int $id): bool => user_can($id, 'manage_woocommerce')));
-        foreach ($staffIds as $staffId) {
+        foreach (BTL_Admin_Permissions::staffUserIds() as $staffId) {
             self::push((int)$staffId, $type, $title, $body, $link);
         }
     }
@@ -62,10 +59,34 @@ final class BTL_Admin_Notifications
             'body' => wp_kses_post($body),
             'link' => $link,
         ], ['%d', '%s', '%s', '%s', '%s']) !== false;
+
         if ($ok) {
             BTL_Cache::delete("admin_unread_notifications_{$adminUserId}");
+            if (wp_rand(1, 20) === 1) {
+                self::trimOld($adminUserId);
+            }
         }
+
         return $ok;
+    }
+
+    private static function trimOld(int $adminUserId): void
+    {
+        global $wpdb;
+        $table = self::table();
+        $cutoff = (int)$wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM {$table} WHERE admin_user_id=%d ORDER BY id DESC LIMIT 1 OFFSET %d",
+            $adminUserId,
+            self::KEEP_PER_ADMIN
+        ));
+
+        if ($cutoff > 0) {
+            $wpdb->query($wpdb->prepare(
+                "DELETE FROM {$table} WHERE admin_user_id=%d AND id<=%d",
+                $adminUserId,
+                $cutoff
+            ));
+        }
     }
 
     public static function register(): void

@@ -3,7 +3,6 @@ defined('ABSPATH') || exit;
 
 final class BTL_Admin_Permissions
 {
-    /** @var array<int, array<int, string>> */
     private static array $requestCache = [];
 
     private const META_KEY = 'btl_admin_permissions';
@@ -39,8 +38,6 @@ final class BTL_Admin_Permissions
             return self::$requestCache[$userId] = self::sanitize($saved);
         }
 
-        // Compatibility mode for the existing WooCommerce staff model.
-        // Explicit user-level permissions override this fallback once configured.
         if (user_can($userId, 'manage_woocommerce')) {
             return self::$requestCache[$userId] = self::ALL;
         }
@@ -65,6 +62,33 @@ final class BTL_Admin_Permissions
             self::$requestCache[$userId] = $clean;
         }
         return $updated;
+    }
+
+    public static function staffUserIds(): array
+    {
+        $ids = BTL_Cache::remember('staff_user_ids', static function (): array {
+            $roles = [];
+            foreach (wp_roles()->roles as $slug => $role) {
+                if (!empty($role['capabilities']['manage_woocommerce'])) {
+                    $roles[] = (string)$slug;
+                }
+            }
+            if (!$roles) {
+                return [];
+            }
+
+            $found = get_users([
+                'role__in' => $roles,
+                'fields' => 'ID',
+                'orderby' => 'ID',
+                'order' => 'ASC',
+                'number' => 200,
+            ]);
+
+            return array_values(array_map('intval', (array)$found));
+        }, 'btl', 120);
+
+        return is_array($ids) ? array_map('intval', $ids) : [];
     }
 
     public static function register_graphql(): void
