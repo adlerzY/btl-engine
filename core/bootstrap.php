@@ -55,6 +55,8 @@ function btl_autoload_core_class(string $class): void
             'BTL_Admin_Reviews' => 'AdminReviews.php',
             'BTL_Admin_Notifications' => 'AdminNotifications.php',
             'BTL_Admin_CdKeys' => 'AdminCdKeys.php',
+            'BTL_Admin_Users' => 'AdminUsers.php',
+            'BTL_Admin_Products' => 'AdminProducts.php',
             'BTL_Secure_Vault' => 'SecureVault.php',
             'BTL_Secure_Fields' => 'SecureFields.php',
             'BTL_Order_Security_Hooks' => 'OrderSecurityHooks.php',
@@ -233,4 +235,6 @@ if (btl_is_admin_graphql_request()) {
     add_action('graphql_register_types', ['BTL_Admin_Reviews', 'register'], 12);
     add_action('graphql_register_types', ['BTL_Admin_Notifications', 'register'], 12);
     add_action('graphql_register_types', ['BTL_Admin_CdKeys', 'register'], 13);
+    add_action('graphql_register_types', ['BTL_Admin_Users', 'register'], 13);
+    add_action('graphql_register_types', ['BTL_Admin_Products', 'register'], 13);
 }

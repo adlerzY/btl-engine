@@ -12,6 +12,7 @@ final class BTL_Admin_Permissions
         'tickets.read', 'tickets.write', 'tickets.claim',
         'reviews.moderate',
         'cdkeys.read', 'cdkeys.write', 'cdkeys.reveal',
+        'users.read', 'products.read',
     ];
 
     public static function boot(): void
@@ -64,15 +65,25 @@ final class BTL_Admin_Permissions
         return $updated;
     }
 
+    public static function staffRoles(): array
+    {
+        $roles = BTL_Cache::remember('staff_roles', static function (): array {
+            $found = [];
+            foreach (wp_roles()->roles as $slug => $role) {
+                if (!empty($role['capabilities']['manage_woocommerce'])) {
+                    $found[] = (string)$slug;
+                }
+            }
+            return $found;
+        }, 'btl', 300);
+
+        return is_array($roles) ? array_values($roles) : [];
+    }
+
     public static function staffUserIds(): array
     {
         $ids = BTL_Cache::remember('staff_user_ids', static function (): array {
-            $roles = [];
-            foreach (wp_roles()->roles as $slug => $role) {
-                if (!empty($role['capabilities']['manage_woocommerce'])) {
-                    $roles[] = (string)$slug;
-                }
-            }
+            $roles = self::staffRoles();
             if (!$roles) {
                 return [];
             }
