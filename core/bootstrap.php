@@ -67,6 +67,7 @@ function btl_autoload_core_class(string $class): void
             'BTL_Ticket_Admin' => 'TicketAdmin.php',
             'BTL_Customer_Tickets' => 'CustomerTickets.php',
             'BTL_Customer_Reviews' => 'CustomerReviews.php',
+            'BTL_Account_Stats' => 'AccountStats.php',
             'BTL_Review_Moderation' => 'ReviewModeration.php',
             'BTL_Avatar_Guard' => 'AvatarGuard.php',
             'BTL_CdKey_Stock' => 'CdKeyStock.php',
@@ -200,6 +201,7 @@ add_filter('graphql_request_data', ['BTL_Sessions', 'authorizeGraphqlRequest'], 
 add_action('graphql_register_types', ['BTL_Customer_Tickets', 'register'], 9);
 add_action('graphql_register_types', ['BTL_Blog_Comments', 'register'], 10);
 add_action('graphql_register_types', ['BTL_Customer_Reviews', 'register'], 10);
+add_action('graphql_register_types', ['BTL_Account_Stats', 'register'], 10);
 add_action('wp_insert_comment', ['BTL_Customer_Reviews', 'notify_on_review_reply'], 10, 2);
 add_action('pre_comment_approved', ['BTL_Review_Moderation', 'guard_repeat_approval'], 20, 2);
 add_action('transition_comment_status', ['BTL_Review_Moderation', 'revalidate_on_status_change'], 10, 3);
